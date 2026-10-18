@@ -15,15 +15,53 @@ The first experiment is matrix multiplication, beginning with row-wise and colum
 ```text
 master-thesis/
 ├── CMakeLists.txt
+├── README.md
+├── .gitattributes                   # keeps .sh and .conf files on Unix line endings
+├── .gitignore
+├── docs/
+│   └── findings-log.md              # one short entry per experiment
+├── scripts/                         # shared benchmark tooling for all experiments
+│   ├── README.md                    # how to use it, add an experiment or a check
+│   ├── run.sh                       # entry point: run.sh <experiment> [check ...]
+│   ├── lib/common.sh
+│   └── checks/                      # one file per check
+│       ├── environment.sh
+│       ├── timings.sh
+│       ├── cache_counters.sh
+│       └── no_vectorization.sh
 └── experiments/
     └── 01-matrix-multiplication/
+        ├── README.md                # report: question, theory, method, results, conclusions
         ├── CMakeLists.txt
-        └── main.cpp
+        ├── benchmark.conf           # settings the shared scripts read (target, versions, sizes)
+        ├── main.cpp
+        └── results/
+            └── 2026-10-18-ryzen5500u-wsl2/
+                ├── environment.txt
+                ├── timings.csv
+                ├── cache-counters.csv
+                └── no-vectorization-512.csv
 ```
 
 - The root `CMakeLists.txt` configures the overall project and registers the experiments.
-- Each experiment has its own directory and `CMakeLists.txt` so it can be built and extended independently.
+- Each experiment is self-contained: its code, build file, benchmark settings (`benchmark.conf`), raw results and written findings all live in its own directory under `experiments/`. Start with that experiment's `README.md`.
+- Measuring is done by the shared tooling in `scripts/`, so every experiment is measured the same way. You pass it an experiment's `benchmark.conf` (or directory) and choose which checks to run. See [scripts/README.md](scripts/README.md).
+- Each measurement session gets its own dated folder under the experiment's `results/` (`<date>-<machine>`), with an `environment.txt` describing the hardware and toolchain. Old runs are not overwritten.
+- `docs/findings-log.md` summarises the findings of all experiments in one place and links to each experiment's report.
 - Build output and generated files belong in the build directory; they should not be committed to the repository.
+
+## Experiments
+
+| # | Experiment | Question | Report |
+|---|---|---|---|
+| 01 | Matrix multiplication | How does memory-access order (row-wise versus column-wise) affect speed, and can cache measurements explain it? | [README](experiments/01-matrix-multiplication/README.md) |
+
+To add a new experiment:
+
+1. Create `experiments/NN-name/` with its own `CMakeLists.txt`, program, `README.md` and `benchmark.conf`.
+2. Make the program follow the contract in [scripts/README.md](scripts/README.md) (`<variant> <size> <repetitions>` in, CSV out), so the shared scripts can measure it.
+3. Register it in the root `CMakeLists.txt` with `add_subdirectory(...)`.
+4. Add a row to the table above and an entry in `docs/findings-log.md`.
 
 ## Requirements
 
@@ -81,23 +119,33 @@ To build only the matrix multiplication target:
 cmake --build build --target matrix_multiplication --config Release --parallel
 ```
 
-The `--config Release` argument is used by multi-configuration generators and is harmless for common single-configuration generators. For single-configuration builds, set `CMAKE_BUILD_TYPE=Release` during configuration as shown above.
+The `--config Release` argument is used by multi-configuration generators and is harmless for common single-configuration generators. For single-configuration builds, the root `CMakeLists.txt` defaults to a Release build when no build type is given; passing `-DCMAKE_BUILD_TYPE=Release` explicitly, as shown above, is still recommended. An unoptimised build is roughly 35 times slower on this experiment and gives misleading timings.
 
 ## Run an experiment
 
 After a successful build, run the generated `matrix_multiplication` executable. Its exact location depends on the operating system, compiler, and CMake generator. For a typical single-configuration Linux build, run:
 
 ```bash
-./build/experiments/01-matrix-multiplication/matrix_multiplication
+./build/experiments/01-matrix-multiplication/matrix_multiplication row_wise 512
 ```
+
+The arguments are `<naive|row_wise|tiled> <n> [repetitions] [tile_size]`; run the program without arguments to see the usage line. See the [experiment README](experiments/01-matrix-multiplication/README.md) for what each version does.
 
 For a typical Visual Studio multi-configuration build on Windows, the executable is usually under the experiment's `Release` build directory, for example:
 
 ```powershell
-.\build\experiments\01-matrix-multiplication\Release\matrix_multiplication.exe
+.\build\experiments\01-matrix-multiplication\Release\matrix_multiplication.exe row_wise 512
 ```
 
 If the executable is not at that exact path, inspect the generated `build` directory or use your IDE's run configuration for the `matrix_multiplication` CMake target.
+
+To measure an experiment (timings, cache counters, no-SIMD check and environment description) on Linux or WSL, use the shared scripts. For matrix multiplication:
+
+```bash
+bash scripts/run.sh experiments/01-matrix-multiplication            # all checks
+bash scripts/run.sh experiments/01-matrix-multiplication timings    # one check
+bash scripts/run.sh --list                                          # available checks
+```
 
 You can also open the repository root in any IDE that supports CMake projects. Load or configure the root `CMakeLists.txt`, choose an available C++ toolchain, and select the target for the experiment you want to run. The project does not require a specific IDE.
 
