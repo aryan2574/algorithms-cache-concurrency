@@ -34,6 +34,7 @@ load_experiment() {
     : "${LARGE_FROM:=1024}"
     : "${EXTRA_ARGS:=}"      # appended after <variant> <size> <repetitions>
     : "${COUNTER_SIZES:=}"   # empty = skip the cache_counters check
+    : "${COUNTER_RUNS:=3}"   # runs measured per cache_counters value (more = less noise)
     : "${NOVEC_SIZE:=}"      # empty = skip the no_vectorization check
 }
 
