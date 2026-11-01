@@ -1,0 +1,2 @@
+n,algorithm,runs_measured,l1_loads_per_run,l1_load_misses_per_run,l1_miss_rate_pct,cache_refs_per_run,cache_misses_per_run,dtlb_loads_per_run,dtlb_load_misses_per_run
+1000,tiled,10,1892408313,98401188,5.20,176101773,48427842,18353647,1151749
