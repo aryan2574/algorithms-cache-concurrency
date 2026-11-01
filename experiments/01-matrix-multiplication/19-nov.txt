@@ -1,0 +1,158 @@
+Cache - L1, L2, L3 - are different levels of high speed memory that help CPU access frequently needed data without going to RAM.
+
+CPU can execute instructions quickly but accessing data from main memory takes time and causes performance problem called memory wall.
+
+So, solution is faster memory structure close to CPU. CPU Caches.
+
+1. Registers -> Approx 1KB (100b/core) - 0.3 ns
+2. L1 Cache -> 256KB (64KB/core) - 1.1 ns
+3. L2 Cache -> 1 MB (256KB/core) - 3.3 ns
+4. L3 Cache -> 8 MB - 12.8 ns
+5. L4 Cache -> 128 MB - 42.4 ns
+
+Hierarchy -
+       CPU
+        |
+     Registers
+        |
+      L1 Cache
+        |
+      L2 Cache
+        |
+      L3 Cache
+        |
+     Main Memory
+       (RAM)
+        |
+      SSD / HDD
+
+
+**L1 cache - closest to the CPU core. 
+It's divided into two separate caches - L1 Instruction cache - Stores instructions that the CPU needs to execute and L1 Data Cache - Stores the data that CPU reads and writes.
+We separate them because - instructions and data have different access patterns. Separating them allows the processor to fetch instructions and access data efficiently at the same time.
+Property - L1
+Capacity - Usually tens of KB
+Speed - Fastest cache levels
+Location - Inside each CPU core
+Organisation - Usually split into instructions and data caches
+Purpose - Immediately needed instructions and data
+
+L2 cache - It is larger than L1 but generally slower. 
+Property L2
+Capacity Usually hundreds of KB to several MB
+Speed Slower than L1
+Location Commonly private to a core, but designs different
+Organisation Usually unified : instructions + data
+Purpose - Hold a larger working set close to the core
+Some modern architectures have separate L2 for each core, while others share L2 between a group of cores.
+
+L3 cache - It is generally the largest traditional on-chip CPU cache.
+Let - CPU with 8 cores. Each core can have its own L1 and L2 caches, but the processor may have a shared L3 cache.
+Why we need L3? Consider two CPU cores executing different threads that access some of the same data. A shared last level cache can make it possible for both cores to benefit from a common cache resource instead of every core needing an independent large cache.
+Property L3
+Capacity Usually several MB to tens of MB or more
+Speed Slower than L1 and L2
+Location Usually shared across some of all cores
+Organisation generally unified
+Purpose Hold a larger working set and reduce RAM access
+Intel calls its shared L3 the Last Level Cache (LLC) in many processor designs
+
+CPU operate on blocks called cache lines. Most modern x86 processros use 64-byte cache lines.
+
+Cache hit - The requested data is already available in the cache.
+Cache miss - The requested data is not available in the cache, so the processor must obtain it from a lower level of memory Hierarchy.
+
+
+** How CPU access these caches?
+int x = arr[10];
+
+The processor generates a memory request for the address of arr[10].
+CPU requests data -> Memory address of arr[10]
+
+1. L1 cache lookup -> Is the requested cache line present?
+Hit → Return data
+Miss → Check L2
+
+2. L2 cache lookup
+Hit → Return data
+Miss → Check L3
+
+3. L3 cache lookup
+Hit → Return data
+Miss → Access RAM
+
+Main memory (RAM)
+Fetch the requested cache line
+
+** How CPU organize data inside a cache?
+Two important question - Where could the data be stored inside the cache? How can it determine whether that data is actually there?
+
+Cache line - Imagine a cache has 64 sets and each set has 8 ways. -> 64 x 8 = 512 cache lines
+Each line is of 64 bytes - 512 x 64 = 32768 bytes (32 KB)
+
+Caches uses the memory address to identify correct locaiton. Address is divided into
+┌───────────────┬─────────────┬──────────────┐
+│      TAG      │ SET INDEX  │ BYTE OFFSET  │
+└───────────────┴─────────────┴──────────────┘
+Tag - Identifies which memory block is stored in a cache line
+Set Index - Identifies which cache set should be searched
+Byte offset - Identifies the byte within the cache line
+Cache uses the set index to locate a set, then compares the requested tag against the tags of the available ways. If valid matching tag found, it is a cache hit.
+
+Associativity - There are three cache-mapping approaches
+Organisation  ->  Where can a block go?
+Direct-mapped       Exactly one cache location
+Set-associative     Any way within its assigned set
+Fully associative   Any cache location
+
+** How caches work?
+1. Temporal locality - When we access the data once - there are chances we will access it again. The same memory location is accessed repeatedly. It makes sense to keep that data in the cache rather than fetching it over and over.
+
+2. Spatial locality - When we access one memory location, there are chances we will access nearby memory locations soon. The array elements are accessed sequantially.When one cache line is fetched, it also brings the neighboring elements.
+
+** When Cache becomes full, cache has to remove some existing cache lines to make room. This is cache replacement.
+Common replacement policies are
+1. LRU (Least Recently Used) - Replace a line that has not been used for the longest time
+2. FIFO (First In, First Out) - Replace the line that entered First
+3. Pseudo LRU - Approx LRU with lower hardware overhead
+
+Some cache misses -
+1. Compulsory miss -> First time accessing a memory block
+2. Capacity miss -> Cache can not hold the required working set
+3. Conflict miss -> Multiple blocks compete for the same cache set
+
+** Average Memory Access Time (AMAT) = T_L1 + MR_L1(T_L2 + MR_L2 (T_L3 + MR_L3 P_RAM))
+Symbol	Meaning
+T_L1	Time to access L1
+T_L2	Time to access L2 after an L1 miss
+T_L3	Time to access L3 after an L2 miss
+MR_L1	L1 local miss rate
+MR_L2	L2 local miss rate
+MR_L3	L3 local miss rate
+P_RAM	Additional penalty to access RAM after an L3 miss
+-- this tells even if our CPU has large L3 cache, having high L1 hit rate can be extremely valuable.
+
+** Cost per byte decreases - the lower we go in the memory Hierarchy - the cheaper it is to provide storage for each byte of data
+Memory	        Relative cost per byte	    Speed
+CPU Registers	Very high	                Extremely fast
+L1 Cache	    Very high	                Extremely fast
+L2 Cache	    High	                    Very fast
+L3 Cache	    Lower	                    Fast
+RAM	            Much lower	                Slower
+SSD	            Even lower	                Much slower
+Because different memory technologies have different manufacturing costs.
+- CPU caches (SRAM): Very fast, but require relatively more chip area and are expensive to manufacture per bit.
+- RAM (DRAM): Slower, but provides much greater storage capacity at a lower cost per bit.
+- SSD: Uses flash memory, offering much greater storage capacity at a lower cost per byte, but with much higher access latency.
+
+
+** CPU Core - It's an independent processing unit inside a processor (CPU) that is capable of executing program instructions. CPU core is like an individual worker inside a computer's processor. Each core can execute instructions, perform calculations and process data.
+Component           Purpose
+Control unit        Coordinates instructions execution
+ALU                 Performs arithmetic and logical operations
+FPU                 Performs floating point calculations
+Registers           Stores small amounts of data needed Immediately by instructions
+L1 Cache            Stores small ammounts of data needed immediately by instructions
+L2 Cache            Provides additional fast storage for instructions and data
+
+Modern cores also contain instructions pipelines, branch predictors, load/store units and other execution resources.
