@@ -1,7 +1,5 @@
 # Findings log
 
-Short current summary first (the outline for the thesis text). After that, a dated research log of questions and answers, so a later session can see what was done on which day and what turned out to be wrong.
-
 Details, tables and limitations: [experiments/01-matrix-multiplication/README.md](../experiments/01-matrix-multiplication/README.md). Hardware vocabulary: [experiments/01-matrix-multiplication/19-nov.txt](../experiments/01-matrix-multiplication/19-nov.txt).
 
 ---
@@ -45,10 +43,11 @@ A. At n=512: `naive` L1 miss rate 65% vs 8.5% `row_wise` vs 18% `tiled`. The gen
 A. No. At n=512 without auto-vectorisation, `row_wise` was still 14× faster than `naive` (799 ms vs 56 ms). SIMD added another ~1.7× for `row_wise`. We treated “14× is the memory effect” as general. It is not: n=512 is also the conflict-miss case.
 
 **Q. Why does `tiled` win only at n=1024?**
-A. Hypothesis: B is 2 MB at n=512 (fits in 4 MB L3) and 8 MB at n=1024 (does not), so `row_wise` streams B from RAM once per row. The counters did not confirm it (`tiled` had *more* L1 misses). We left it as a hypothesis.
+A. Hypothesis: B is 2 MB at n=512 (fits in 4 MB L3) and 8 MB at n=1024 (does not), so `row_wise` streams B from RAM once per row. The counters did not confirm it (`tiled` had _more_ L1 misses). We left it as a hypothesis.
 
 **Q. What did we write down as conclusions (later corrected)?**
 A.
+
 - “10× to 25× for n ≥ 256” — only true for power-of-two n.
 - “over 100× more last-level cache misses” — L2, not LLC; and the 100× is the power-of-two case.
 - “The hardware counts only demand misses” — true for the L2 event, false for L1.
@@ -58,11 +57,9 @@ A.
 
 ---
 
-### 2026-11-01 — professor's questions, theory, and a second measurement
+### 2026-11-01 — cache, theory, and second measurement
 
-The meeting date of the professor's questions is not recorded. The work on them is this day.
-
-#### What the questions mean
+#### Questions
 
 **Q1. Theoretical derivation of the number of cache misses for (a) naive, (b) row-major × col-major, (c) tiled. Why do the answers depend on cache size and line size?**
 A. A miss is “the CPU had to bring in a new 64-byte line”. How many of those you pay depends on (1) how you walk memory and (2) how much the cache can hold of what you walked. Line size `L = 8` doubles turns a sequential walk of `n³` accesses into `n³/L` misses. Cache size `Z` decides whether a column, two rows, or three tiles stay resident. If they do not, you pay again.
@@ -72,18 +69,18 @@ A. A miss is “the CPU had to bring in a new 64-byte line”. How many of those
 - (c) tiled, `d × d`: `Q ≈ 2 n³/(d L) + n²/L` when `L ≤ d ≤ √(Z/3)`. For L1, `d* ≈ 37`, so d = 32.
 
 **Q2. What is “the lower bound for the number of cache misses in matrix multiplication”?**
-A. A proof, not a measurement. Any algorithm that does the classical `n³` multiply-adds must move at least `Ω(n³ / √Z)` words (Hong & Kung 1981), or `2 n³ / (L √Z)` lines with the tight constant of Smith, Lowery, Langou, van de Geijn (arXiv:1702.02017). You cannot beat that by a cleverer loop order. You *can* beat it with Strassen-type algorithms, which do less arithmetic. Compulsory traffic `3 n²/L` is a second, smaller bound (read A, B once; write C once).
+A. A proof, not a measurement. Any algorithm that does the classical `n³` multiply-adds must move at least `Ω(n³ / √Z)` words (Hong & Kung 1981), or `2 n³ / (L √Z)` lines with the tight constant of Smith, Lowery, Langou, van de Geijn (arXiv:1702.02017). You cannot beat that by a cleverer loop order. You _can_ beat it with Strassen-type algorithms, which do less arithmetic. Compulsory traffic `3 n²/L` is a second, smaller bound (read A, B once; write C once).
 
 On our L1 (Z = 4096, L = 8) the bound is `n³/256`. At n = 1000 that is 3.9 M misses. We measured 1128 M (`naive`), 129 M (`row_wise`), 42 M (`tiled`). Ratios 289× / 33× / 11×; the model predicted 256 / 32 / 2 for ideal tiled.
 
 **Q3. Three regimes: (a) whole matrix < cache, (b) one row < cache < matrix, (c) cache < one row. How do the algorithms perform, and how does the system behave?**
 A. Apply the three cases **per cache level**.
 
-| Regime | L1 (32 KiB) | L2 (512 KiB) | L3 (4 MiB) |
-| --- | --- | --- | --- |
-| (a) matrix fits | n < 64 | n < 256 | n < 724 |
-| (b) row fits, matrix does not | 64 ≤ n ≤ 4096 | n ≥ 256 | n ≥ 724 |
-| (c) row does not fit | n > 4096 | n > 65 536 | n > 524 288 |
+| Regime                        | L1 (32 KiB)   | L2 (512 KiB) | L3 (4 MiB)  |
+| ----------------------------- | ------------- | ------------ | ----------- |
+| (a) matrix fits               | n < 64        | n < 256      | n < 724     |
+| (b) row fits, matrix does not | 64 ≤ n ≤ 4096 | n ≥ 256      | n ≥ 724     |
+| (c) row does not fit          | n > 4096      | n > 65 536   | n > 524 288 |
 
 We never reach (c) on this machine. In (a) all three versions have only compulsory misses; they should be close (at n=64 `naive` was still 2.6× — one matrix already fills L1). In (b) `row_wise` pays `n³/L` and is bandwidth-bound; `naive` pays `n³` if the column conflicts and is latency-bound; `tiled` pays `2 n³/(d L)` and cuts RAM traffic once B exceeds L3. In (c) `row_wise` would lose the second row as well (`2 n³/L`); tiling would keep working. To see (c) we need n > 4096 or a simulator.
 
@@ -118,14 +115,13 @@ A. `COUNTER_RUNS` in `benchmark.conf` / `scripts/lib/common.sh` (default 3). `ca
 
 **Q. What earlier sentences are now known to be wrong?**
 A.
+
 1. `cache-misses` = last-level / LLC → it is L2 on Zen 2.
 2. “10× to 25× for n ≥ 256” → only power-of-two n; else ~3×.
 3. “hardware counts only demand misses” → L2 event yes, L1 event no (includes prefetch).
 4. “14× without SIMD is the memory effect” → true at n=512, inflated by conflicts; 2.3× at n=500.
-5. “counters do not explain tiled at 1024” → L1 counters *should not* explain it; the mechanism is L3/RAM reuse, visible in the GFLOPS sweep.
+5. “counters do not explain tiled at 1024” → L1 counters _should not_ explain it; the mechanism is L3/RAM reuse, visible in the GFLOPS sweep.
 6. Load counts “should be ~2 n³ and we see 213 M at n=512” → the counter is per instruction including stores; expect `~1.5 n³` (201 M at n=512). 213 M was a noisy 3-run value; today 212 M with 30 runs, close enough.
 
 **Data:** `experiments/01-matrix-multiplication/results/2026-11-01-ryzen5500u-wsl2/`
 (timings, cache-counters, no-vectorization-500, large-n/, l3-sweep/, tile-sweep/d8…d128/, perf-event-mapping.txt)
-
-**Not committed.** The report, this log, the theory notes, the script tweaks and the new result files are in the working tree only.
