@@ -19,7 +19,7 @@ master-thesis/
 ├── .gitattributes                   # keeps .sh and .conf files on Unix line endings
 ├── .gitignore
 ├── docs/
-│   └── findings-log.md              # one short entry per experiment
+│   └── findings-log.md              # current summary + dated Q&A research log
 ├── scripts/                         # shared benchmark tooling for all experiments
 │   ├── README.md                    # how to use it, add an experiment or a check
 │   ├── run.sh                       # entry point: run.sh <experiment> [check ...]
@@ -32,22 +32,25 @@ master-thesis/
 └── experiments/
     └── 01-matrix-multiplication/
         ├── README.md                # report: question, theory, method, results, conclusions
+        ├── 19-nov.txt               # cache-hierarchy notes (hardware vocabulary)
         ├── CMakeLists.txt
         ├── benchmark.conf           # settings the shared scripts read (target, versions, sizes)
         ├── main.cpp
         └── results/
-            └── 2026-10-18-ryzen5500u-wsl2/
-                ├── environment.txt
-                ├── timings.csv
-                ├── cache-counters.csv
-                └── no-vectorization-512.csv
+            ├── 2026-10-18-ryzen5500u-wsl2/   # first timings + 3-run counters
+            └── 2026-11-01-ryzen5500u-wsl2/   # theory-check run (see experiment README)
+                ├── timings.csv, cache-counters.csv, no-vectorization-500.csv
+                ├── perf-event-mapping.txt, environment.txt
+                ├── large-n/                  # n = 1000, 1024
+                ├── l3-sweep/                 # row_wise vs tiled, n = 600..1000
+                └── tile-sweep/d8 .. d128/    # tile size at n = 1000
 ```
 
 - The root `CMakeLists.txt` configures the overall project and registers the experiments.
 - Each experiment is self-contained: its code, build file, benchmark settings (`benchmark.conf`), raw results and written findings all live in its own directory under `experiments/`. Start with that experiment's `README.md`.
 - Measuring is done by the shared tooling in `scripts/`, so every experiment is measured the same way. You pass it an experiment's `benchmark.conf` (or directory) and choose which checks to run. See [scripts/README.md](scripts/README.md).
 - Each measurement session gets its own dated folder under the experiment's `results/` (`<date>-<machine>`), with an `environment.txt` describing the hardware and toolchain. Old runs are not overwritten.
-- `docs/findings-log.md` summarises the findings of all experiments in one place and links to each experiment's report.
+- `docs/findings-log.md` has a short current summary per experiment and a dated Q&A research log (what was asked, what was measured, what was later corrected).
 - Build output and generated files belong in the build directory; they should not be committed to the repository.
 
 ## Experiments

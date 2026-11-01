@@ -34,7 +34,7 @@ Results go to `<experiment>/results/<YYYY-MM-DD>-local/` unless `--out` is given
 |---|---|---|
 | `environment` | `environment.txt` | CPU, OS, compiler, flags, git commit, the experiment's parameters |
 | `timings` | `timings.csv` | median runtime of every variant at every size |
-| `cache_counters` | `cache-counters.csv` | L1 and last-level cache counters per run, via `perf` (skipped if unavailable) |
+| `cache_counters` | `cache-counters.csv` | Per-run L1 loads/misses, L2 refs/misses and dTLB loads/misses, via `perf` (skipped if unavailable). Columns: `n,algorithm,runs_measured,l1_loads_per_run,l1_load_misses_per_run,l1_miss_rate_pct,cache_refs_per_run,cache_misses_per_run,dtlb_loads_per_run,dtlb_load_misses_per_run`. Generic names depend on the CPU: on AMD Zen 2 `cache-misses` is L2 misses; on Intel it is LLC misses. |
 | `no_vectorization` | `no-vectorization-<n>.csv` | same timings with SIMD auto-vectorisation off, to separate memory effects from SIMD |
 
 ## Layout
@@ -58,7 +58,7 @@ scripts/
    - `VARIANTS`: the versions to compare, space separated
    - `SIZES`: the problem sizes
 
-   Optional: `REPS`, `REPS_LARGE`, `LARGE_FROM`, `EXTRA_ARGS`, `COUNTER_SIZES` (empty skips `cache_counters`), `NOVEC_SIZE` (empty skips `no_vectorization`). Write optional settings as `: "${NAME:=value}"` so they can be overridden from the command line.
+   Optional: `REPS`, `REPS_LARGE`, `LARGE_FROM`, `EXTRA_ARGS`, `COUNTER_SIZES` (empty skips `cache_counters`), `COUNTER_RUNS` (measured runs per counter row; default 3, use 30 or more under WSL2 for n <= 512), `NOVEC_SIZE` (empty skips `no_vectorization`). Write optional settings as `: "${NAME:=value}"` so they can be overridden from the command line (`SIZES`, `VARIANTS`, `EXTRA_ARGS`, `COUNTER_RUNS`, ...). A check that a counter row is usable: `l1_loads_per_run` should be about `1.5 n^3` for the matrix-multiplication experiment.
 2. A program (the CMake target) that follows this contract:
    - It is called as `<executable> <variant> <size> <repetitions> [EXTRA_ARGS...]`.
    - It prints a CSV header line, then one result row, to **stdout**. Progress and error messages go to **stderr**.

@@ -1,0 +1,4 @@
+n,algorithm,tile_size,repetitions,median_ms,gflops,checksum
+500,naive,0,7,136.045534,1.837620,-7327.481520
+500,row_wise,0,7,60.448849,4.135728,-7327.481520
+500,tiled,32,7,54.238071,4.609308,-7327.481520

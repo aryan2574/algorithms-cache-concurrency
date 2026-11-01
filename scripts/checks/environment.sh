@@ -27,6 +27,11 @@ check_environment() {
         echo "=== CPU ==="
         lscpu | grep -E 'Model name|^CPU\(s\)|L1d|L2|L3' || true
         echo
+        echo "=== Cache geometry (per instance) ==="
+        lscpu -C 2>/dev/null || echo "lscpu -C not available"
+        echo "Page size: $(getconf PAGESIZE) bytes"
+        echo "Transparent huge pages: $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo unknown)"
+        echo
         echo "=== Compiler and build ==="
         grep -E 'CMAKE_CXX_COMPILER:|CMAKE_BUILD_TYPE|CMAKE_CXX_FLAGS_RELEASE:' "$cache" || true
         "$compiler" --version | head -n 1
@@ -38,7 +43,7 @@ check_environment() {
         echo "VARIANTS=$VARIANTS"
         echo "SIZES=$SIZES"
         echo "REPS=$REPS  REPS_LARGE=$REPS_LARGE (sizes >= $LARGE_FROM)  EXTRA_ARGS=$EXTRA_ARGS"
-        echo "COUNTER_SIZES=$COUNTER_SIZES  NOVEC_SIZE=$NOVEC_SIZE"
+        echo "COUNTER_SIZES=$COUNTER_SIZES  COUNTER_RUNS=$COUNTER_RUNS  NOVEC_SIZE=$NOVEC_SIZE"
         echo "perf: $(perf --version 2>/dev/null || echo 'not available')"
     } >"$OUT_DIR/environment.txt"
 }

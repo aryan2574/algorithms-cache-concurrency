@@ -1,0 +1,34 @@
+Generic perf event names compared with AMD Zen 2 raw event codes.
+Each line: count, event, percentage of time counted (100.00 = no multiplexing).
+Events in one group are counted at the same time in the same run (6 hardware counters).
+Date (UTC): 2026-11-01 21:17:52
+Command: perf stat -x, -e <group> build/01-matrix-multiplication-release/experiments/01-matrix-multiplication/matrix_multiplication <variant> 512 1 32
+(whole process: setup + reference check + warm-up + 1 timed run)
+
+--- naive, n=512 ---
+549529658,L1-dcache-load-misses:u,100.00
+549529658,rc860:u,100.00
+541926679,cache-misses:u,100.00
+541926679,r0964:u,100.00
+1066558982,cache-references:u,100.00
+1066558982,rff60:u,100.00
+834735214,L1-dcache-loads:u,100.00
+834735214,r0040:u,100.00
+540937925,dTLB-loads:u,100.00
+540937925,rff45:u,100.00
+2924162,dTLB-load-misses:u,100.00
+2924162,rf045:u,100.00
+
+--- row_wise, n=512 ---
+188605490,L1-dcache-load-misses:u,100.00
+188605490,rc860:u,100.00
+136873473,cache-misses:u,100.00
+136873473,r0964:u,100.00
+367893111,cache-references:u,100.00
+367893111,rff60:u,100.00
+821849830,L1-dcache-loads:u,100.00
+821849830,r0040:u,100.00
+135970668,dTLB-loads:u,100.00
+135970668,rff45:u,100.00
+979313,dTLB-load-misses:u,100.00
+979313,rf045:u,100.00
