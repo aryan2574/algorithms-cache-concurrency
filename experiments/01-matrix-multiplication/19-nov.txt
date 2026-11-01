@@ -1,158 +1,477 @@
-Cache - L1, L2, L3 - are different levels of high speed memory that help CPU access frequently needed data without going to RAM.
+CACHE MEMORY: THEORY NOTES
+==========================
 
-CPU can execute instructions quickly but accessing data from main memory takes time and causes performance problem called memory wall.
+Background for experiment 01 (matrix multiplication). The miss-count derivations, the lower
+bound and the three regimes are in README.md (section "Theory"). These notes explain the
+hardware those formulas are about.
 
-So, solution is faster memory structure close to CPU. CPU Caches.
-
-1. Registers -> Approx 1KB (100b/core) - 0.3 ns
-2. L1 Cache -> 256KB (64KB/core) - 1.1 ns
-3. L2 Cache -> 1 MB (256KB/core) - 3.3 ns
-4. L3 Cache -> 8 MB - 12.8 ns
-5. L4 Cache -> 128 MB - 42.4 ns
-
-Hierarchy -
-       CPU
-        |
-     Registers
-        |
-      L1 Cache
-        |
-      L2 Cache
-        |
-      L3 Cache
-        |
-     Main Memory
-       (RAM)
-        |
-      SSD / HDD
+Machine used in this project: AMD Ryzen 5 5500U (Zen 2 architecture), measured inside WSL2.
+Values marked "lscpu" or "perf" were checked on this laptop on 2026-11-01.
 
 
-**L1 cache - closest to the CPU core. 
-It's divided into two separate caches - L1 Instruction cache - Stores instructions that the CPU needs to execute and L1 Data Cache - Stores the data that CPU reads and writes.
-We separate them because - instructions and data have different access patterns. Separating them allows the processor to fetch instructions and access data efficiently at the same time.
-Property - L1
-Capacity - Usually tens of KB
-Speed - Fastest cache levels
-Location - Inside each CPU core
-Organisation - Usually split into instructions and data caches
-Purpose - Immediately needed instructions and data
+1. WHY CACHES EXIST
+-------------------
 
-L2 cache - It is larger than L1 but generally slower. 
-Property L2
-Capacity Usually hundreds of KB to several MB
-Speed Slower than L1
-Location Commonly private to a core, but designs different
-Organisation Usually unified : instructions + data
-Purpose - Hold a larger working set close to the core
-Some modern architectures have separate L2 for each core, while others share L2 between a group of cores.
+The caches L1, L2 and L3 are levels of small, fast memory between the CPU and main memory
+(RAM). They keep recently and frequently used data close to the CPU, so it does not have to
+be fetched from RAM every time.
 
-L3 cache - It is generally the largest traditional on-chip CPU cache.
-Let - CPU with 8 cores. Each core can have its own L1 and L2 caches, but the processor may have a shared L3 cache.
-Why we need L3? Consider two CPU cores executing different threads that access some of the same data. A shared last level cache can make it possible for both cores to benefit from a common cache resource instead of every core needing an independent large cache.
-Property L3
-Capacity Usually several MB to tens of MB or more
-Speed Slower than L1 and L2
-Location Usually shared across some of all cores
-Organisation generally unified
-Purpose Hold a larger working set and reduce RAM access
-Intel calls its shared L3 the Last Level Cache (LLC) in many processor designs
+A CPU core can execute instructions much faster than data arrives from main memory. Waiting
+for memory then becomes the bottleneck. This is called the "memory wall".
 
-CPU operate on blocks called cache lines. Most modern x86 processros use 64-byte cache lines.
-
-Cache hit - The requested data is already available in the cache.
-Cache miss - The requested data is not available in the cache, so the processor must obtain it from a lower level of memory Hierarchy.
+The solution is a hierarchy of faster but smaller memories close to the CPU: the CPU caches.
 
 
-** How CPU access these caches?
+2. THE MEMORY HIERARCHY
+-----------------------
+
+        CPU core
+           |
+       Registers
+           |
+       L1 cache        split into L1 data + L1 instruction, private to each core
+           |
+       L2 cache        private to each core (on our CPU)
+           |
+       L3 cache        shared by a group of cores
+           |
+     Main memory (RAM)
+           |
+       SSD / HDD
+
+Going down the hierarchy: bigger, slower, cheaper per byte.
+
+Our laptop. Size, ways and sets come from `lscpu -C`. Latencies are typical published values
+for Zen 2 (AMD optimisation guide and public measurements), NOT measured on this laptop.
+At about 4 GHz, 1 cycle = 0.25 ns.
+
+Level       Size                           Ways  Sets  Line  Latency (approx.)
+---------   ----------------------------   ----  ----  ----  ----------------------
+Registers   under 1 KB that a program      -     -     -     0 (inside the core)
+            can name (see section 16)
+L1 data     32 KiB per core                8     64    64 B  ~4-5 cycles  (~1 ns)
+L1 instr.   32 KiB per core                8     64    64 B
+L2          512 KiB per core               8     1024  64 B  ~12 cycles   (~3 ns)
+L3          4 MiB per group of 3 cores     16    4096  64 B  ~40 cycles   (~10 ns)
+            (8 MiB on the chip = 2 x 4 MiB)
+RAM         gigabytes                      -     -     -     ~90-130 ns   (~400 cycles)
+
+Notes:
+- One core can only use the L3 of its own group of cores (AMD calls the group a CCX). For our
+  single-threaded program the usable L3 is therefore 4 MiB. WSL2 also reports "L3 4 MiB".
+- Our CPU has no L4 cache. The sizes in the first version of these notes (L1 256 KB,
+  L2 1 MB, L3 8 MB, L4 128 MB) describe a different CPU with 4 cores and an L4 cache
+  (some Intel CPUs had 128 MB of eDRAM as L4).
+- The CPU has 6 cores / 12 threads, but the WSL2 virtual machine sees only 4 logical CPUs
+  (2 cores x 2 threads). This matters for future multithreading experiments.
+
+
+3. THE CACHE LEVELS
+-------------------
+
+L1 cache: closest to the CPU core.
+It is divided into two separate caches:
+- L1 instruction cache: stores the instructions the CPU is about to execute.
+- L1 data cache: stores the data the CPU reads and writes.
+They are separated because instructions and data have different access patterns, and two
+caches can be accessed at the same time (fetch the next instruction while loading data).
+
+Property      L1
+Capacity      tens of KB (ours: 32 KiB data + 32 KiB instructions per core)
+Speed         fastest cache level (~4-5 cycles)
+Location      inside each CPU core
+Organisation  split into instruction and data caches
+Purpose       instructions and data needed right now
+
+L2 cache: larger than L1, but slower.
+
+Property      L2
+Capacity      hundreds of KB to several MB (ours: 512 KiB per core)
+Speed         slower than L1 (~12 cycles)
+Location      usually private to a core (ours is), but designs differ
+Organisation  usually unified: instructions + data
+Purpose       hold a larger working set close to the core
+
+Some architectures have a separate L2 for each core, others share an L2 between a group of
+cores. On our CPU the L2 is inclusive of the L1: everything in L1 is also in L2.
+
+L3 cache: generally the largest on-chip CPU cache.
+Example: a CPU with 8 cores. Each core has its own L1 and L2, but the cores share an L3.
+Why do we need L3? Two cores running different threads may use some of the same data. A
+shared last-level cache lets both cores benefit from one large cache instead of every core
+needing its own large cache.
+
+Property      L3
+Capacity      several MB to tens of MB or more (ours: 4 MiB per group of 3 cores)
+Speed         slower than L1 and L2 (~40 cycles)
+Location      shared by some or all cores
+Organisation  unified
+Purpose       hold a larger working set and reduce RAM accesses
+
+The last cache before RAM is called the Last Level Cache (LLC). On our CPU that is the L3.
+
+Special feature of our L3: it is a "victim cache". Lines coming from RAM go into L2 and L1,
+not into L3. A line enters the L3 only when it is evicted from an L2. So L2 and L3 hold
+mostly different data, and one core can keep about 512 KiB + 4 MiB = 4.5 MiB close by.
+
+
+4. CACHE LINES, HITS AND MISSES
+-------------------------------
+
+The CPU moves data between the levels in blocks called cache lines. Most modern x86
+processors, including ours, use 64-byte lines. A 64-byte line holds 8 values of type double.
+
+Cache hit:  the requested data is already in the cache.
+Cache miss: the requested data is not in the cache, so the processor must get it from a lower
+            level of the memory hierarchy.
+
+On a miss, the whole 64-byte line is copied in, not just the requested bytes. Reading the
+neighbouring values afterwards is then free. This is why walking along a row of a matrix
+(neighbours in memory) is much cheaper than walking down a column.
+
+
+5. HOW THE CPU LOOKS UP DATA
+----------------------------
+
 int x = arr[10];
 
 The processor generates a memory request for the address of arr[10].
-CPU requests data -> Memory address of arr[10]
+CPU requests data -> memory address of arr[10]
 
-1. L1 cache lookup -> Is the requested cache line present?
-Hit → Return data
-Miss → Check L2
+1. L1 cache lookup: is the cache line containing this address present?
+   Hit  -> return data
+   Miss -> check L2
 
 2. L2 cache lookup
-Hit → Return data
-Miss → Check L3
+   Hit  -> return data (and copy the line into L1)
+   Miss -> check L3
 
 3. L3 cache lookup
-Hit → Return data
-Miss → Access RAM
+   Hit  -> return data (and copy the line into L2 and L1)
+   Miss -> access RAM
 
-Main memory (RAM)
-Fetch the requested cache line
+4. Main memory (RAM)
+   Fetch the requested cache line (it goes into L2 and L1; on our CPU not into L3).
 
-** How CPU organize data inside a cache?
-Two important question - Where could the data be stored inside the cache? How can it determine whether that data is actually there?
-
-Cache line - Imagine a cache has 64 sets and each set has 8 ways. -> 64 x 8 = 512 cache lines
-Each line is of 64 bytes - 512 x 64 = 32768 bytes (32 KB)
-
-Caches uses the memory address to identify correct locaiton. Address is divided into
-┌───────────────┬─────────────┬──────────────┐
-│      TAG      │ SET INDEX  │ BYTE OFFSET  │
-└───────────────┴─────────────┴──────────────┘
-Tag - Identifies which memory block is stored in a cache line
-Set Index - Identifies which cache set should be searched
-Byte offset - Identifies the byte within the cache line
-Cache uses the set index to locate a set, then compares the requested tag against the tags of the available ways. If valid matching tag found, it is a cache hit.
-
-Associativity - There are three cache-mapping approaches
-Organisation  ->  Where can a block go?
-Direct-mapped       Exactly one cache location
-Set-associative     Any way within its assigned set
-Fully associative   Any cache location
-
-** How caches work?
-1. Temporal locality - When we access the data once - there are chances we will access it again. The same memory location is accessed repeatedly. It makes sense to keep that data in the cache rather than fetching it over and over.
-
-2. Spatial locality - When we access one memory location, there are chances we will access nearby memory locations soon. The array elements are accessed sequantially.When one cache line is fetched, it also brings the neighboring elements.
-
-** When Cache becomes full, cache has to remove some existing cache lines to make room. This is cache replacement.
-Common replacement policies are
-1. LRU (Least Recently Used) - Replace a line that has not been used for the longest time
-2. FIFO (First In, First Out) - Replace the line that entered First
-3. Pseudo LRU - Approx LRU with lower hardware overhead
-
-Some cache misses -
-1. Compulsory miss -> First time accessing a memory block
-2. Capacity miss -> Cache can not hold the required working set
-3. Conflict miss -> Multiple blocks compete for the same cache set
-
-** Average Memory Access Time (AMAT) = T_L1 + MR_L1(T_L2 + MR_L2 (T_L3 + MR_L3 P_RAM))
-Symbol	Meaning
-T_L1	Time to access L1
-T_L2	Time to access L2 after an L1 miss
-T_L3	Time to access L3 after an L2 miss
-MR_L1	L1 local miss rate
-MR_L2	L2 local miss rate
-MR_L3	L3 local miss rate
-P_RAM	Additional penalty to access RAM after an L3 miss
--- this tells even if our CPU has large L3 cache, having high L1 hit rate can be extremely valuable.
-
-** Cost per byte decreases - the lower we go in the memory Hierarchy - the cheaper it is to provide storage for each byte of data
-Memory	        Relative cost per byte	    Speed
-CPU Registers	Very high	                Extremely fast
-L1 Cache	    Very high	                Extremely fast
-L2 Cache	    High	                    Very fast
-L3 Cache	    Lower	                    Fast
-RAM	            Much lower	                Slower
-SSD	            Even lower	                Much slower
-Because different memory technologies have different manufacturing costs.
-- CPU caches (SRAM): Very fast, but require relatively more chip area and are expensive to manufacture per bit.
-- RAM (DRAM): Slower, but provides much greater storage capacity at a lower cost per bit.
-- SSD: Uses flash memory, offering much greater storage capacity at a lower cost per byte, but with much higher access latency.
+In reality, these steps overlap. An out-of-order core keeps executing other instructions while
+a miss is being served, and it can have many misses in flight at the same time.
 
 
-** CPU Core - It's an independent processing unit inside a processor (CPU) that is capable of executing program instructions. CPU core is like an individual worker inside a computer's processor. Each core can execute instructions, perform calculations and process data.
-Component           Purpose
-Control unit        Coordinates instructions execution
-ALU                 Performs arithmetic and logical operations
-FPU                 Performs floating point calculations
-Registers           Stores small amounts of data needed Immediately by instructions
-L1 Cache            Stores small ammounts of data needed immediately by instructions
-L2 Cache            Provides additional fast storage for instructions and data
+6. HOW DATA IS ORGANISED INSIDE A CACHE: SETS, WAYS, TAGS
+---------------------------------------------------------
 
-Modern cores also contain instructions pipelines, branch predictors, load/store units and other execution resources.
+Two important questions: where can a line be stored inside the cache, and how does the cache
+find out whether a line is actually there?
+
+A cache is divided into sets, and each set has a fixed number of slots called ways.
+Our L1 data cache: 64 sets x 8 ways = 512 lines. 512 lines x 64 B = 32768 B = 32 KiB.
+
+The cache uses the memory address to find the right place. The address is split into:
+
+    ┌───────────────┬─────────────┬──────────────┐
+    │      TAG      │  SET INDEX  │ BYTE OFFSET  │
+    │   bits 12+    │  bits 6-11  │  bits 0-5    │   <- for our L1
+    └───────────────┴─────────────┴──────────────┘
+
+Byte offset: which byte inside the 64-byte line (64 = 2^6, so 6 bits)
+Set index:   which set to search (64 sets = 2^6, so 6 bits)
+Tag:         which memory block is stored in a line of that set
+
+The cache uses the set index to find the set, then compares the tag of the request with the
+tags of the 8 ways in that set. A valid matching tag is a cache hit.
+
+In one formula, for our L1:   set = (address / 64) mod 64
+
+IMPORTANT FOR THE EXPERIMENT: two addresses that are a multiple of 64 x 64 = 4096 bytes apart
+always have the same set index, so they compete for the same 8 ways.
+
+Example: one row of a 512 x 512 matrix of doubles is 512 x 8 = 4096 bytes. So B[0][j],
+B[1][j], B[2][j], ... (one column) all map to the SAME L1 set. Walking down a column, only 8
+lines of that column can be in L1 at the same time, although L1 has 512 lines. The same is
+true for n = 1024 (8192-byte rows). For n = 256 the column uses 2 sets, for n = 128 4 sets.
+For n = 1000 a row is 8000 bytes = 125 lines, so the next row lands 61 sets further on
+(125 mod 64 = 61) and a column spreads over all 64 sets.
+Powers of two are the worst case for set-associative caches.
+
+Alignment on this machine (checked 2026-11-01): glibc puts the four std::vector buffers at
+page + 16 bytes for every n >= 250 (address % 64 = 16 and address % 4096 = 16). A full row
+then occupies n/L + 1 lines, not n/L. A 32-double tile row that starts mid-line spans 5 lines
+rather than 4 (about +25% traffic for tiled, +1-3% for row_wise).
+
+L2 (1024 sets, index bits 6-15) and L3 (4096 sets, index bits 6-17) use the physical address.
+Address bits 12 and above depend on which physical page the operating system picked (pages
+are 4 KiB), so for steps of 4 KiB or more the L2/L3 placement is partly random. For a column
+with a 4096-byte step, bits 6-11 stay the same, so the column can use only 16 of the 1024 L2
+sets (16 x 8 = 128 lines) and 64 of the 4096 L3 sets (64 x 16 = 1024 lines).
+L1 placement is exactly predictable: its index bits 6-11 lie inside the 4 KiB page offset,
+which is the same in the virtual and the physical address. (This is also why L1 is
+32 KiB with 8 ways: 32 KiB / 8 = 4 KiB = one page.)
+
+
+7. ASSOCIATIVITY
+----------------
+
+There are three ways to decide where a block may go:
+
+Organisation        Where can a block go?
+Direct-mapped       exactly one cache location
+Set-associative     any way within its assigned set
+Fully associative   any cache location
+
+Our caches: L1 and L2 are 8-way, L3 is 16-way set-associative.
+More ways means fewer conflict misses, but more tags to compare on each access (more time
+and power). The theory in README.md assumes a fully associative cache.
+
+
+8. HOW CACHES WORK: LOCALITY
+----------------------------
+
+1. Temporal locality: data used once is likely to be used again soon. The same memory
+   location is accessed repeatedly, so it makes sense to keep it in the cache rather than
+   fetch it over and over.
+   Example: row_wise updates the same row of C n times; tiled reuses each loaded tile d times.
+
+2. Spatial locality: after accessing one memory location, nearby locations are likely to be
+   accessed soon, for example array elements read one after another. When one cache line is
+   fetched, it also brings the neighbouring elements.
+   Example: row_wise reads B and C along rows and uses all 8 doubles of every line it loads.
+   naive walks down columns of B and uses only 1 double of each line it loads.
+
+
+9. REPLACEMENT POLICIES
+-----------------------
+
+When the cache (or one set) is full, an existing line must be removed to make room. This is
+cache replacement. Common replacement policies are:
+1. LRU (Least Recently Used): replace the line that has not been used for the longest time
+2. FIFO (First In, First Out): replace the line that entered first
+3. Pseudo-LRU: an approximation of LRU that needs less hardware. Real CPUs use variants of
+   this; AMD does not publish the exact policy.
+
+A weakness of LRU: if a loop cycles through more lines than fit (in the cache, or in one set),
+LRU evicts every line just before it is needed again, so EVERY access misses. On a single
+cache with a sharp capacity limit that looks like a cliff. On this machine the L3 drop for
+row_wise is gradual: GFLOPS stay around 5-6.5 up to n = 512 (B = 2 MiB), start falling from
+about n = 600 (B = 2.9 MiB), and reach 2.6 at n = 1000 (B = 7.6 MiB). The textbook size
+n = sqrt(4 MiB / 8) = 724 is therefore only a landmark, not a step. The usable L3 is smaller
+than 4 MiB (victim cache, shared with other cores, A and C also pass through it).
+
+The theory uses "optimal replacement" (evict the line that is needed furthest in the future,
+Belady's algorithm). Hardware cannot do this, but it gives clean formulas, and for our access
+patterns LRU gives the same counts except close to the regime boundaries.
+
+
+10. TYPES OF CACHE MISSES (THE "THREE Cs")
+------------------------------------------
+
+1. Compulsory miss: the first access to a memory block.
+   For C = A x B with n x n matrices: at least 3n^2/L lines (read A and B once, write C once).
+2. Capacity miss: the cache cannot hold the working set.
+   row_wise at n = 512: B (2 MiB) does not fit in L1 (32 KiB), so B is loaded again for
+   every row i: about n^3/L L1 misses.
+3. Conflict miss: there is enough space in total, but too many lines map to the same set.
+   tiled at n = 512: the 32 rows of a tile map to the same few L1 sets (4096-byte rows, see
+   section 6), which have only 8 ways each, so the tile does not stay in L1.
+
+
+11. WRITES
+----------
+
+- Write-back: a store changes the line in the cache. The line is written to the next level
+  only when it is evicted. A changed line is called "dirty".
+- Write-allocate: a store to a line that is not in the cache first loads that line.
+- In our experiment C is written. Its lines are loaded like other lines and written back
+  about once: around n^2/L extra transfers, small next to n^3/L. (Exception: if the row of C
+  cannot stay in the cache, it is loaded and written back again and again.)
+
+
+12. HARDWARE PREFETCHING
+------------------------
+
+- The L1 and L2 caches have prefetchers. They watch the addresses of misses, detect
+  sequential or fixed-step patterns, and load lines before the program asks for them.
+- Prefetching hides waiting time, but it does NOT reduce the number of lines moved. The theory
+  counts lines moved, so a counter that includes prefetched lines matches the theory better.
+  Our L1 counter (L1-dcache-load-misses) includes them; our L2 counter (cache-misses) does
+  not (section 17).
+- Prefetchers usually stop at a 4 KiB page boundary. naive at n = 512 or more jumps to a new
+  page on every access to B, so it gets no help. row_wise reads B sequentially, so the L2
+  prefetcher loads most lines in advance and few L2 misses are left for the counter to see.
+
+
+13. VIRTUAL MEMORY, PAGES AND THE TLB
+-------------------------------------
+
+- Programs use virtual addresses. The hardware translates them to physical addresses page by
+  page. Pages are 4 KiB on our system (`getconf PAGESIZE`). Transparent huge pages are set to
+  "madvise", so our std::vector matrices use normal 4 KiB pages.
+- The TLB (translation lookaside buffer) is a cache for these translations. Zen 2 has an L1
+  data TLB with 64 entries and an L2 TLB with 2048 entries. A miss in both needs a page-table
+  walk (extra memory accesses).
+- 64 entries x 4 KiB = 256 KiB of data reachable without an L1 TLB miss;
+  2048 entries x 4 KiB = 8 MiB with the L2 TLB.
+- naive at n = 512: each step down a column of B is 4096 bytes, a new page. One column
+  touches 512 pages, more than the 64-entry L1 TLB, so almost every access to B misses the
+  L1 TLB (~n^3 L1-TLB misses measured). Three matrices are 1536 pages, which still fit in
+  the 2048-entry L2 TLB, so page walks stay around 1.2 M, not hundreds of millions.
+- naive at n = 1024: B alone is 2048 pages and A+B+C are 6144 pages, more than the L2 TLB.
+  Measured page walks: 114 M. That is a second reason n = 1024 naive is much slower than
+  n = 1000 (3.2 M walks), on top of the L1/L2 conflict misses.
+- row_wise and tiled walk pages in order, so the same TLB entry is reused for 512 consecutive
+  doubles. L1-TLB misses stay in the low millions even at n = 1024.
+
+
+14. LATENCY, BANDWIDTH AND AMAT
+-------------------------------
+
+Latency:   how long one access takes (for example ~100 ns for RAM).
+Bandwidth: how many bytes per second can be moved (for example ~10-20 GB/s from RAM for one
+           core).
+Sequential access (row_wise) is limited by bandwidth: the prefetchers keep many requests in
+flight. Access without prefetching (naive's column walk) is limited by latency.
+
+Average Memory Access Time:
+AMAT = T_L1 + MR_L1 x (T_L2 + MR_L2 x (T_L3 + MR_L3 x P_RAM))
+
+Symbol   Meaning
+T_L1     time to access L1
+T_L2     time to access L2 after an L1 miss
+T_L3     time to access L3 after an L2 miss
+MR_L1    L1 local miss rate (misses / accesses at this level)
+MR_L2    L2 local miss rate
+MR_L3    L3 local miss rate
+P_RAM    additional penalty to access RAM after an L3 miss
+
+This shows that even with a large L3, a high L1 hit rate is extremely valuable.
+
+Rough example with our n = 512 measurements (T_L1 = 4, T_L2 = 12, T_L3 = 40 cycles; B fits in
+L3 at n = 512, so MR_L3 is close to 0):
+  naive:    MR_L1 = 65%, MR_L2 = 98%  -> AMAT = 4 + 0.65 x (12 + 0.98 x 40) = about 37 cycles
+  row_wise: MR_L1 = 8.5%, MR_L2 = 3%  -> AMAT = 4 + 0.085 x (12 + 0.03 x 40) = about 5 cycles
+This is a simplification: out-of-order execution and prefetching overlap many accesses, so
+real programs are not simply "accesses x AMAT". But it shows why naive is so much slower.
+
+Example of a bandwidth limit: row_wise at n = 1024. B (8 MiB) does not fit in L3, so it is
+read from RAM once for every row i: n^3/L lines x 64 B = 8.6 GB per multiplication. At the
+2026-10-18 time of 742 ms that is about 11.6 GB/s; at the 2026-11-01 time of 788 ms it is
+about 10.9 GB/s. Both are a normal rate for one core reading from RAM.
+
+
+15. COST PER BYTE
+-----------------
+
+The lower we go in the memory hierarchy, the cheaper it is to store each byte.
+
+Memory          Relative cost per byte      Speed
+CPU registers   very high                   extremely fast
+L1 cache        very high                   extremely fast
+L2 cache        high                        very fast
+L3 cache        lower                       fast
+RAM             much lower                  slower
+SSD             even lower                  much slower
+
+This is because the memory technologies cost different amounts to manufacture:
+- CPU caches (SRAM): very fast, but need relatively much chip area per bit, so they are
+  expensive.
+- RAM (DRAM): slower, but offers much more capacity at a lower cost per bit.
+- SSD (flash memory): much more capacity at an even lower cost per byte, but with much higher
+  access latency.
+
+
+16. CPU CORE
+------------
+
+A CPU core is an independent processing unit inside a processor (CPU) that can execute
+program instructions. It is like an individual worker inside the processor: each core
+executes instructions, performs calculations and processes data.
+
+Component         Purpose
+Control unit      coordinates instruction execution
+ALU               performs integer arithmetic and logical operations
+FPU / SIMD units  perform floating-point calculations, several numbers per instruction
+Registers         hold the few values the current instructions work on
+L1 cache          holds the data and instructions in use right now (~1 ns away)
+L2 cache          provides additional fast storage for instructions and data (~3 ns away)
+
+Modern cores also contain instruction pipelines, branch predictors, load/store units and
+other execution resources.
+
+Registers: x86-64 has 16 general-purpose registers of 8 bytes and, with AVX2, 16 vector
+registers of 32 bytes, under 1 KB that a program can name. (Internally the core has many more
+physical registers, used for register renaming.)
+
+SIMD (single instruction, multiple data): one instruction works on several numbers at once.
+- SSE2:  128-bit registers = 2 doubles per instruction (every x86-64 CPU has it)
+- AVX2:  256-bit registers = 4 doubles per instruction (our CPU has it, plus FMA)
+Our Release build uses -O3 without -march=native, so the compiler may only use SSE2. Checked
+with objdump on 2026-11-01: the program uses 128-bit xmm registers and mulpd, and no 256-bit
+ymm registers and no FMA instructions. The vectorisation effect in README.md is therefore an
+SSE2 (2-wide) effect.
+
+
+17. MEASURING CACHES ON THIS MACHINE (perf)
+-------------------------------------------
+
+perf's generic event names are mapped to different hardware events on different CPUs.
+On Intel, "cache-misses" means last-level-cache misses. On our AMD Zen 2 it means L2 misses.
+The table was checked on 2026-11-01 by counting each generic name together with the AMD raw
+event code in the same run (equal counts; see results/2026-11-01-ryzen5500u-wsl2/
+perf-event-mapping.txt).
+
+perf name               AMD raw code  What it counts on our CPU
+L1-dcache-loads         r0040         L1 data cache accesses, loads AND stores, one per
+                                      instruction (one SSE2 instruction moves 2 doubles)
+L1-dcache-load-misses   rc860         requests from the L1 data cache to L2: read misses,
+                                      L1 prefetches, store misses. About "lines brought
+                                      into L1".
+cache-references        rff60         all requests to L2
+cache-misses            r0964         L2 misses of data reads and instruction fetches. Lines
+                                      brought in by the L2 prefetcher are not included.
+dTLB-loads              rff45         L1 data TLB misses (lookups in the L2 TLB)
+dTLB-load-misses        rf045         L2 TLB misses (page-table walks)
+
+Not available in WSL2: L3 and memory-controller counters (Linux shows no amd_l3 or amd_df
+device under /sys/bus/event_source/devices). L3 and RAM traffic must therefore be inferred
+from timings, or measured on native Linux.
+
+
+18. THE CACHE MODEL USED FOR THE THEORY
+---------------------------------------
+
+Ideal-cache model (Frigo et al., 1999): one cache of Z elements with lines of L elements,
+fully associative, optimal replacement. We count lines moved into the cache = cache misses Q.
+Our L1: Z = 4096 doubles (32 KiB), L = 8 doubles (64 B). L2: Z = 65536. L3: Z = 524288.
+
+Results for C = A x B with n x n matrices (derivations in README.md):
+  naive      Q = n^3           when the cache holds fewer than about n lines
+             Q = n^3 / L       when it holds n lines but not the whole matrix B
+  row_wise   Q = n^3 / L       (B is read again for every row of A)
+  tiled      Q = 2n^3/(dL) + n^2/L   with d x d tiles, if three tiles fit (3d^2 <= Z)
+  any algorithm doing the n^3 multiply-adds (lower bound):
+             Q >= 2n^3/(L sqrt(Z))  (Hong and Kung 1981; constant: Smith et al. 2017)
+             Q >= 3n^2/L            (every input read once, every output written once)
+If the whole problem fits in the cache, every version has only the 3n^2/L compulsory misses.
+
+Real caches differ from the model: set associativity (conflict misses), pseudo-LRU instead of
+optimal replacement, prefetching, several cache levels, and the TLB. README.md shows where
+these differences matter in our measurements.
+
+
+19. REFERENCES
+--------------
+
+- AMD: Software Optimization Guide for AMD Family 17h Models 30h and Greater Processors
+  (Zen 2), cache and TLB sizes and latencies.
+- AMD: Processor Programming Reference (PPR) for Family 17h processors, performance counter
+  events PMCx040, PMCx045, PMCx060, PMCx064.
+- Linux kernel source, arch/x86/events/amd/core.c: which hardware event each generic perf
+  event name uses on AMD.
+- U. Drepper: What Every Programmer Should Know About Memory, 2007.
+- J. Hennessy, D. Patterson: Computer Architecture: A Quantitative Approach, chapter on the
+  memory hierarchy (three Cs, AMAT).
+- M. Frigo, C. Leiserson, H. Prokop, S. Ramachandran: Cache-Oblivious Algorithms, FOCS 1999.
+- J.-W. Hong, H. T. Kung: I/O Complexity: The Red-Blue Pebble Game, STOC 1981.
+- T. M. Smith, B. Lowery, J. Langou, R. A. van de Geijn: A Tight I/O Lower Bound for Matrix
+  Multiplication, arXiv:1702.02017, 2017.
+- M. Lam, E. Rothberg, M. Wolf: The Cache Performance and Optimizations of Blocked
+  Algorithms, ASPLOS 1991.
