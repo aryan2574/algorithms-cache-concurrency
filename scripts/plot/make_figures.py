@@ -38,12 +38,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import matplotlib.pyplot as plt  # noqa: E402
 
-from plotlib import data, diagrams, experiment01, style  # noqa: E402
+from plotlib import data, diagrams, experiment01, experiment02, style  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # experiment directory name -> module with a FIGURES dict
-EXPERIMENTS = {"01-matrix-multiplication": experiment01}
+EXPERIMENTS = {
+    "01-matrix-multiplication": experiment01,
+    "02-merge-sort": experiment02,
+}
 
 
 def list_figures() -> None:
@@ -132,6 +135,8 @@ def make_session_figures(folder: Path, out_dir: Path | None, formats: list[str],
         return 1
 
     run = data.load_run(folder)
+    if experiment == "02-merge-sort":
+        run.machine.dtype = "int64"
     out_dir = out_dir or docs_folder(experiment) / "figures" / folder.name
     style.apply()
 

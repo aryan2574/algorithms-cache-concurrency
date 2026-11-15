@@ -43,10 +43,30 @@ VERSIONS = {
     "oblivious_row_major": ("row", "oblivious"),
     "oblivious_col_major": ("col", "oblivious"),
     "oblivious_tile_wise": ("tile", "oblivious"),
+    # matrix transposition (always row-major storage; layout key unused for colour choice)
+    "transpose_naive": ("row", "plain"),
+    "transpose_tiled": ("row", "aware"),
+    "transpose_oblivious": ("row", "oblivious"),
+    # A row-major, B stored as B^T (professor case b, literally)
+    "transposed_b": ("row", "plain"),
+    "tiled_transposed_b": ("row", "aware"),
 }
 
-# (layout, kind) -> version name; None where there is no such version
-VERSION_OF = {pair: name for name, pair in VERSIONS.items() if name != "naive"}
+# (layout, kind) -> multiply version name for experiment 01 layout comparisons.
+# Built only from these names so transpose / other extras do not overwrite the map.
+VERSION_OF = {
+    VERSIONS[name]: name
+    for name in (
+        "row_wise",
+        "col_wise",
+        "tiled",
+        "tiled_col_major",
+        "tiled_tile_wise",
+        "oblivious_row_major",
+        "oblivious_col_major",
+        "oblivious_tile_wise",
+    )
+}
 
 NOISE_BAND = 0.10  # differences under 10% are within the run-to-run noise (see the experiment README)
 
@@ -55,6 +75,20 @@ def style_for(version: str) -> dict:
     """matplotlib keyword arguments (color, linestyle, marker) and a label for a version."""
     if version == "naive":
         return {"color": GREY, "linestyle": ":", "marker": "x", "label": "naive i,j,k (row-major)"}
+    if version == "transpose_naive":
+        return {"color": GREY, "linestyle": ":", "marker": "x", "label": "transpose naive (two loops)"}
+    if version == "transpose_tiled":
+        return {"color": BLUE, "linestyle": "-", "marker": "o", "label": "transpose tiled (cache-aware)"}
+    if version == "transpose_oblivious":
+        return {"color": BLUE, "linestyle": "--", "marker": "s", "label": "transpose recursive (oblivious)"}
+    if version == "transposed_b":
+        return {"color": ORANGE, "linestyle": ":", "marker": "x", "label": "A × Bᵀ (ijk, B transposed)"}
+    if version == "tiled_transposed_b":
+        return {"color": ORANGE, "linestyle": "-", "marker": "o", "label": "tiled A × Bᵀ (B transposed)"}
+    if version == "recursive":
+        return {"color": BLUE, "linestyle": "--", "marker": "s", "label": "recursive (top-down)"}
+    if version == "iterative":
+        return {"color": VERMILLION, "linestyle": "-", "marker": "o", "label": "iterative (bottom-up)"}
     layout, kind = VERSIONS[version]
     linestyle, marker, kind_label = KIND_STYLE[kind]
     return {

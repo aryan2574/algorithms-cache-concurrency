@@ -46,6 +46,7 @@ class Machine:
     l3: int = 4 * MIB
     compiler: str = ""
     system: str = ""
+    dtype: str = "double"  # element type shown in the figure footnote
     from_environment: bool = False  # False = the defaults above, environment.txt was not usable
 
     def caches(self) -> list[tuple[str, int]]:
@@ -58,7 +59,7 @@ class Machine:
             parts.append(self.system)
         if self.compiler:
             parts.append(self.compiler)
-        parts.append("double, 1 thread")
+        parts.append(f"{self.dtype}, 1 thread")
         parts.append(f"run: {run_name}")
         return " | ".join(parts)
 
@@ -141,7 +142,7 @@ def load_run(folder: Path) -> Run:
 
 
 def _read_tables(folder: Path, prefix: str, tables: dict[str, pd.DataFrame]) -> None:
-    for stem in ("tile-sweep", "oblivious", "timings", "cache-counters"):
+    for stem in ("tile-sweep", "oblivious", "timings", "cache-counters", "transpose"):
         path = folder / f"{stem}.csv"
         if path.is_file() and path.stat().st_size > 0:
             table = pd.read_csv(path)

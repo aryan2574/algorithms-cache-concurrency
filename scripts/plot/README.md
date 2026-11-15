@@ -35,12 +35,29 @@ Figures go to `docs/<experiment>/figures/<session>/` as `.pdf` (vector) and `.pn
 | `tile_fit_regimes` | `tile-sweep` | GFLOPS vs memory of the three tiles |
 | `tile_l3_sweep` | `l3-sweep/timings` | where tiling starts to pay off |
 | `oblivious_vs_aware` | `oblivious` | best aware / best oblivious |
+| `transpose_vs_n` | `transpose` | naive vs best tiled vs best recursive transpose |
+| `transpose_cache_misses` | `cache-counters` | L1/L2 counters for transpose versions |
+| `transposed_b_vs_row_wise` | `timings` | A×Bᵀ (ijk ± tiled) vs row_wise / tiled |
 | `cache_misses` | `cache-counters` | L1 miss rate, L1 misses/FMA, L2 misses (`perf` cache-misses) |
 | `simd_vectorization` | `timings` + `no-vectorization` | with / without auto-vectorisation |
 | `quality_noise_check` | `tile-sweep` + `oblivious` | same configuration measured twice |
 | `memory_layouts`, `recursion_steps` | (diagrams) | layouts and the recursive split |
 
 Colour = layout (blue row-major, orange column-major, green tile-wise); line style = algorithm (dotted plain, solid aware, dashed oblivious). Grey band = ±10% noise. Speed-ups use the `row_wise` row of the same CSV.
+
+## Figures for experiment 02
+
+| Name | Needs | Shows |
+|---|---|---|
+| `overview_time_vs_n` | `timings` | recursive vs iterative time against n |
+| `ratio_vs_n` | `timings` | iterative/recursive time ratio against n |
+| `throughput_vs_n` | `timings` | million elements/s against n |
+| `cache_misses` | `cache-counters` | L1 miss rate and L2 misses |
+| `misses_per_element` | `cache-counters` | L2 misses per element |
+| `l1_loads` | `cache-counters` | L1 loads per element (sanity) |
+| `bottom_up_passes` | (diagram) | iterative full-array passes vs recursive locality |
+
+Blue dashed = recursive, vermillion solid = iterative. Grey band on the ratio plot = ±10% noise. Vertical dotted lines = working set (`16n` bytes) vs L1 / L2 / L3.
 
 ## Code layout
 
@@ -52,6 +69,7 @@ scripts/plot/
     ├── data.py            CSV + environment.txt (Machine, Run, best_per_group)
     ├── style.py           colours, labels, save() with footnote
     ├── experiment01.py    one function per figure
+    ├── experiment02.py    merge-sort figures
     └── diagrams.py
 ```
 
