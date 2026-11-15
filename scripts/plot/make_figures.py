@@ -20,7 +20,7 @@ Usage:
                   experiments/<name>/results/
 
 A figure whose CSV tables are not in the folder is skipped with a message, so the same command
-works for every results folder.
+works for every results folder. What each figure shows is explained in the experiment README.
 See scripts/plot/README.md.
 """
 

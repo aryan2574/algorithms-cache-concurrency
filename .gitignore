@@ -74,8 +74,8 @@ Testing/
 # CLion local project metadata
 .idea/
 
-# Python (plotting scripts): virtual environment and caches. The generated figures are NOT
-# ignored: they are small and belong to the dated results folders.
+# Python (plotting scripts): virtual environment and caches. Generated figures live under
+# docs/<experiment>/figures/ and are committed.
 .venv/
 __pycache__/
 *.pyc

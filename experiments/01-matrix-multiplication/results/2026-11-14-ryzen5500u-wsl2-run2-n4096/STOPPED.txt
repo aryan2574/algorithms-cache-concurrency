@@ -2,4 +2,4 @@ This session was stopped on purpose (it would have taken more than an hour).
 Finished: tile-sweep.csv has 4 rows (row_wise baseline; tiled with T=32, 64, 128; row major layout).
 Not run: tiled T=256 and T=512, tiled_tile_wise, the oblivious check, the final checksum comparison.
 There is no oblivious.csv. The 4 rows have the same checksum (-49764.049893).
-Treat as indicative only. See experiments/01-matrix-multiplication/14-nov.txt, section 7.4.
+Treat as indicative only. See experiments/01-matrix-multiplication/notes/2026-11-14.txt, section 7.4.

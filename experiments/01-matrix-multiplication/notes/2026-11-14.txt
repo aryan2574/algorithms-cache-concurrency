@@ -1,10 +1,10 @@
 14 Nov 2026 - Tile size, layouts, cache aware and cache oblivious (theory, plan, results)
 
-Notes for this day only. Cache theory in general is in 01-nov.txt.
+Notes for this day only. Cache theory in general is in docs/theory/caches.md.
 Main raw data of this day: results/2026-11-14-ryzen5500u-wsl2-run2/ (tile-sweep.csv, oblivious.csv).
 Also kept: results/2026-11-14-ryzen5500u-wsl2/ (first tile sweep, noisy, not used for conclusions)
 and results/2026-11-14-ryzen5500u-wsl2-run2-n4096/ (partial, stopped for time; see 7.4).
-Figures of this day's data (added 2026-11-15): docs/01-matrix-multiplication/.
+Figures of this day's data: docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/.
 
 
 ** 1. Task from the professor (this week)
@@ -326,7 +326,7 @@ different 4 KiB pages (TLB misses); in the tile wise layout a tile is one contig
 also suits the hardware prefetcher. All three effects would be largest for large tiles, which is
 consistent with the data (-63% at T=512). Confirming this needs hardware counters for all layouts
 (October has counters only for naive / row_wise / tiled; a 2026-11-15 attempt for all nine
-versions was started and stopped, see 15-nov.txt).
+versions was started and stopped, see 2026-11-15.txt).
 
 
 ** 7.3 Layouts, cache aware and cache oblivious, run 2 (oblivious.csv)
@@ -449,7 +449,7 @@ checksum comparison did not run, but all four rows have the same checksum, -4976
 
   - Hardware counters for all nine versions / three layouts: not finished. October has counters
     only for naive, row_wise and tiled (row-major). A full-counter run was started on 2026-11-15
-    (perf is available again) and stopped on purpose; see 15-nov.txt. Explanations of WHY the
+    (perf is available again) and stopped on purpose; see 2026-11-15.txt. Explanations of WHY the
     tile-wise layout wins (conflict misses, TLB, prefetching) remain hypotheses.
   - "Single row > cache" is only partly covered, on purpose because of wall time: work grows as
     n^3, so n = 4096 is about eight times more work than n = 2048 (one multiply ~20 to 40 s). The
@@ -463,4 +463,4 @@ checksum comparison did not run, but all four rows have the same checksum, -4976
     tile size in the layout.
   - The column major tiled versions differ up to 20% from row major tiled at n=2048, not explained.
   - Code not committed when measured (see section 6).
-  - Charts for this day's data are in docs/01-matrix-multiplication/ (added 2026-11-15).
+  - Charts for this day's data are in docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/.
