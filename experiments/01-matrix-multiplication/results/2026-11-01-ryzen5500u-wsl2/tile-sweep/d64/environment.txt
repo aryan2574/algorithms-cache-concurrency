@@ -1,0 +1,40 @@
+=== Environment: 01-matrix-multiplication ===
+Date (UTC): 2026-11-01 21:35:15
+Git commit: d088bb23973e2c656b3ffb94eadef2997d823f00
+Working tree: has uncommitted changes in experiments/01-matrix-multiplication
+
+=== Operating system ===
+PRETTY_NAME="Ubuntu 26.04.1 LTS"
+Linux ayush-aryan 6.18.54.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Tue Oct  6 19:13:07 UTC 2026 x86_64 GNU/Linux
+
+=== CPU ===
+CPU(s):                                  4
+Model name:                              AMD Ryzen 5 5500U with Radeon Graphics
+L1d cache:                               64 KiB (2 instances)
+L2 cache:                                1 MiB (2 instances)
+L3 cache:                                4 MiB (1 instance)
+
+=== Cache geometry (per instance) ===
+NAME ONE-SIZE ALL-SIZE WAYS TYPE        LEVEL SETS PHY-LINE COHERENCY-SIZE
+L1d       32K      64K    8 Data            1   64        1             64
+L1i       32K      64K    8 Instruction     1   64        1             64
+L2       512K       1M    8 Unified         2 1024        1             64
+L3         4M       4M   16 Unified         3 4096        1             64
+Page size: 4096 bytes
+Transparent huge pages: always [madvise] never
+
+=== Compiler and build ===
+CMAKE_BUILD_TYPE:STRING=Release
+CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++
+CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG
+c++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+cmake version 4.2.3
+No-vectorisation build adds: -fno-tree-vectorize -fno-tree-slp-vectorize
+
+=== Parameters (from experiments/01-matrix-multiplication/benchmark.conf) ===
+TARGET=matrix_multiplication
+VARIANTS=tiled
+SIZES=1000
+REPS=7  REPS_LARGE=5 (sizes >= 1024)  EXTRA_ARGS=64
+COUNTER_SIZES=1000  COUNTER_RUNS=10  NOVEC_SIZE=512
+perf: perf version 6.18.54.1.g26d1ceb55087

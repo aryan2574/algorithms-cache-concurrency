@@ -5,8 +5,8 @@
 # Sourced by scripts/run.sh.
 #
 # The experiment program also does setup and a correctness check in the same
-# process. To remove that, each variant is measured with LO and HI repetitions;
-# (HI counts - LO counts) / (HI - LO) is the cost of one run alone.
+# process. To remove that, each variant is measured with LO = 1 and HI = 1 + COUNTER_RUNS
+# repetitions; (HI counts - LO counts) / COUNTER_RUNS is the cost of one run alone.
 #
 # Which versions and tile sizes (settings in benchmark.conf, default = the old behaviour):
 #   COUNTER_VERSIONS  versions to measure (default: VARIANTS)
@@ -14,11 +14,13 @@
 # naive, row_wise and col_wise have no parameter (tile_size is written as 0).
 # The program always checks its result against row_wise here (not naive): the counters measure
 # the version under test, and a naive reference at n=1024 would dominate the wall time.
-# naive itself is skipped for sizes above TILE_SWEEP_NAIVE_REFERENCE_MAX (it takes minutes).
+# naive itself is skipped from TILE_SWEEP_NAIVE_REFERENCE_MAX on (it takes minutes).
 #
 # Note: perf under WSL2 counts user-mode events only (event names end in ":u").
 
-COUNTER_EVENTS=(cache-references cache-misses L1-dcache-loads L1-dcache-load-misses)
+# What the generic events count depends on the CPU (see scripts/README.md).
+COUNTER_EVENTS=(cache-references cache-misses L1-dcache-loads L1-dcache-load-misses
+                dTLB-loads dTLB-load-misses)
 COUNTER_PLAIN_VERSIONS=" naive row_wise col_wise "
 
 # _perf_counts <variant> <size> <repetitions> <tile size> <reference> <name of associative array to fill>
@@ -41,7 +43,7 @@ _perf_counts() {
 # _counter_row <size> <variant> <tile size written to the CSV> <tile size passed> <reference>
 _counter_row() {
     local size="$1" variant="$2" tile_label="$3" tile="$4" reference="$5"
-    local LO=1 HI=4
+    local LO=1 HI=$((1 + COUNTER_RUNS))
     declare -A lo=() hi=()
     _perf_counts "$variant" "$size" "$LO" "$tile" "$reference" lo
     _perf_counts "$variant" "$size" "$HI" "$tile" "$reference" hi
@@ -50,11 +52,19 @@ _counter_row() {
         -v ml="${lo[cache-misses]}" -v mh="${hi[cache-misses]}" \
         -v ll="${lo[L1-dcache-loads]}" -v lh="${hi[L1-dcache-loads]}" \
         -v xl="${lo[L1-dcache-load-misses]}" -v xh="${hi[L1-dcache-load-misses]}" \
-        'BEGIN {
+        -v tl="${lo[dTLB-loads]}" -v th="${hi[dTLB-loads]}" \
+        -v ul="${lo[dTLB-load-misses]}" -v uh="${hi[dTLB-load-misses]}" \
+        'function per_run(l, h) {
+            # Empty when perf reports "<not supported>" or "<not counted>".
+            if (l !~ /^[0-9]+$/ || h !~ /^[0-9]+$/) return ""
+            return sprintf("%.0f", (h - l) / runs)
+        }
+        BEGIN {
             loads = (lh - ll) / runs; miss = (xh - xl) / runs
-            printf "%d,%s,%d,%d,%.0f,%.0f,%.2f,%.0f,%.0f\n", n, alg, tile, runs,
+            printf "%d,%s,%d,%d,%.0f,%.0f,%.2f,%.0f,%.0f,%s,%s\n", n, alg, tile, runs,
                 loads, miss, 100 * miss / loads,
-                (rh - rl) / runs, (mh - ml) / runs
+                (rh - rl) / runs, (mh - ml) / runs,
+                per_run(tl, th), per_run(ul, uh)
         }' >>"$OUT_DIR/cache-counters.csv"
 }
 
@@ -72,7 +82,7 @@ check_cache_counters() {
     local versions="${COUNTER_VERSIONS:-$VARIANTS}" params="${COUNTER_PARAMS:-$EXTRA_ARGS}"
     log "Cache counters (versions: $versions; tile sizes: $params; sizes: $COUNTER_SIZES)"
 
-    echo "n,algorithm,tile_size,runs_measured,l1_loads_per_run,l1_load_misses_per_run,l1_miss_rate_pct,cache_refs_per_run,cache_misses_per_run" \
+    echo "n,algorithm,tile_size,runs_measured,l1_loads_per_run,l1_load_misses_per_run,l1_miss_rate_pct,cache_refs_per_run,cache_misses_per_run,dtlb_loads_per_run,dtlb_load_misses_per_run" \
         >"$OUT_DIR/cache-counters.csv"
 
     local size variant param
