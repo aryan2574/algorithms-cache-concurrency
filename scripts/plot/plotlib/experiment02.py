@@ -27,17 +27,33 @@ def _finish_layout(fig, bottom: float = 0.04) -> None:
         engine.set(rect=(0, bottom, 1, 1 - bottom))
 
 
+_SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _format_power_of_two(value, _pos=None) -> str:
+    """Tick label for a power-of-two length.
+
+    ScalarFormatter on a log axis switches on a 1e6 offset once n passes about
+    a million, so the ticks read 0.001, 0.004, … instead of 1024, 4096, ….
+    """
+    n = int(round(value))
+    if n > 0 and (n & (n - 1)) == 0:
+        return "2" + str(n.bit_length() - 1).translate(_SUPERSCRIPT)
+    return str(n)
+
+
 def _power_of_two_axis(ax, values, axis: str = "x") -> None:
     values = sorted(set(int(v) for v in values))
+    formatter = mticker.FuncFormatter(_format_power_of_two)
     if axis == "x":
         ax.set_xscale("log", base=2)
         ax.set_xticks(values)
-        ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+        ax.xaxis.set_major_formatter(formatter)
         ax.xaxis.set_minor_locator(mticker.NullLocator())
     else:
         ax.set_yscale("log", base=2)
         ax.set_yticks(values)
-        ax.yaxis.set_major_formatter(mticker.ScalarFormatter())
+        ax.yaxis.set_major_formatter(formatter)
         ax.yaxis.set_minor_locator(mticker.NullLocator())
 
 
@@ -166,6 +182,8 @@ def fig_cache_misses(run: Run):
     axes[0].legend(loc="best", fontsize=7)
 
     _plain_log_yaxis(axes[1])
+    axes[1].yaxis.set_major_formatter(mticker.FuncFormatter(
+        lambda v, _: f"{v/1e6:g}M" if v >= 1e6 else (f"{v/1e3:g}k" if v >= 1e3 else f"{v:g}")))
     axes[1].set_ylabel("misses per sort (perf cache-misses)")
     axes[1].set_title("L2 misses (Zen 2: cache-misses)")
 

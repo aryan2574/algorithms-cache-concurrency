@@ -41,12 +41,19 @@ def _power_of_two_axis(ax, values, axis: str = "x") -> None:
     if axis == "x":
         ax.set_xscale("log", base=2)
         ax.set_xticks(values)
-        ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+        # useOffset would print a 1e6-style shift once the ticks get large
+        fmt = mticker.ScalarFormatter()
+        fmt.set_scientific(False)
+        fmt.set_useOffset(False)
+        ax.xaxis.set_major_formatter(fmt)
         ax.xaxis.set_minor_locator(mticker.NullLocator())
     else:
         ax.set_yscale("log", base=2)
         ax.set_yticks(values)
-        ax.yaxis.set_major_formatter(mticker.ScalarFormatter())
+        fmt = mticker.ScalarFormatter()
+        fmt.set_scientific(False)
+        fmt.set_useOffset(False)
+        ax.yaxis.set_major_formatter(fmt)
         ax.yaxis.set_minor_locator(mticker.NullLocator())
 
 
@@ -650,9 +657,13 @@ def fig_transpose_vs_n(run: Run):
     for version in ("transpose_tiled", "transpose_oblivious"):
         sub = best[best.algorithm == version].sort_values("n")
         ax.plot(sub.n, sub.median_ms, **{**style.style_for(version), "markersize": 5})
+        # The same CSV column is a tile size for the tiled copy and the recursion
+        # cutoff for the oblivious copy. They are not the same parameter.
+        tag = "base" if version == "transpose_oblivious" else "T"
+        dy = 8 if version == "transpose_oblivious" else -9
         for row in sub.itertuples():
-            ax.annotate(f"T={int(row.tile_size)}", (row.n, row.median_ms), textcoords="offset points",
-                        xytext=(4, 4), fontsize=6, color=style.style_for(version)["color"])
+            ax.annotate(f"{tag}={int(row.tile_size)}", (row.n, row.median_ms), textcoords="offset points",
+                        xytext=(4, dy), fontsize=6, color=style.style_for(version)["color"])
     _power_of_two_axis(ax, list(naive.index), "x")
     ax.set_yscale("log")
     ax.set_xlabel("matrix size n")
