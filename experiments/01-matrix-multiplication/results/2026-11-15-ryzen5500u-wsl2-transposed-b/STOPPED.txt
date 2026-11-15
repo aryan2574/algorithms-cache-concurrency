@@ -1,0 +1,11 @@
+naive at n=2048 was skipped on purpose.
+
+Reason: CPU / wall-time limit of this machine (AMD Ryzen 5 5500U, one thread, WSL2).
+Matrix multiplication is O(n^3). On this CPU naive already takes ~10 s median at n=1024
+(see timings.csv); at n=2048 that is about 8x more arithmetic (~1–2 minutes per
+repetition, plus a naive reference check before every other version). A full naive
+sweep here would take well over half an hour for little new information: the
+transposed_b / tiled_transposed_b comparison against row_wise and tiled is what this
+session is for, and those finish in seconds to a minute.
+
+naive is already measured at n=512 and n=1024 in this folder.
