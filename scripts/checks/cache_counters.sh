@@ -21,7 +21,8 @@
 # What the generic events count depends on the CPU (see scripts/README.md).
 COUNTER_EVENTS=(cache-references cache-misses L1-dcache-loads L1-dcache-load-misses
                 dTLB-loads dTLB-load-misses)
-COUNTER_PLAIN_VERSIONS=" naive row_wise col_wise "
+# Versions that take no tile / block parameter (tile_size written as 0).
+COUNTER_PLAIN_VERSIONS=" naive row_wise col_wise transpose_naive transposed_b recursive iterative "
 
 # _perf_counts <variant> <size> <repetitions> <tile size> <reference> <name of associative array to fill>
 _perf_counts() {
@@ -93,9 +94,22 @@ check_cache_counters() {
                 warn "skipping naive at n=$size (too slow)"
                 continue
             fi
-            if [[ "$COUNTER_PLAIN_VERSIONS" == *" $variant "* ]]; then
+            # Correctness reference: COUNTER_REFERENCE from benchmark.conf if set;
+            # otherwise transpose_naive / recursive / row_wise by experiment.
+            local reference="${COUNTER_REFERENCE:-}"
+            if [ -z "$reference" ]; then
+                if [[ "$variant" == transpose_* ]]; then
+                    reference=transpose_naive
+                elif [[ "$variant" == recursive || "$variant" == iterative ]]; then
+                    reference=recursive
+                else
+                    reference=row_wise
+                fi
+            fi
+            if [[ "$COUNTER_PLAIN_VERSIONS" == *" $variant "* ]] || [ -z "$params" ]; then
+                # CSV tile_size = 0; argv tile must still be >= 1 (matrix_multiplication rejects 0).
                 echo "n=$size $variant" >&2
-                _counter_row "$size" "$variant" 0 32 row_wise
+                _counter_row "$size" "$variant" 0 1 "$reference"
             else
                 for param in $params; do
                     # the tile-wise layout needs n to be a multiple of the tile size
@@ -104,7 +118,7 @@ check_cache_counters() {
                         continue
                     fi
                     echo "n=$size $variant tile=$param" >&2
-                    _counter_row "$size" "$variant" "$param" "$param" row_wise
+                    _counter_row "$size" "$variant" "$param" "$param" "$reference"
                 done
             fi
         done
