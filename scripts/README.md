@@ -36,6 +36,14 @@ Results go to `<experiment>/results/<YYYY-MM-DD>-local/` unless `--out` is given
 | `timings` | `timings.csv` | median runtime of every variant at every size |
 | `cache_counters` | `cache-counters.csv` | L1 and last-level cache counters per run, via `perf` (skipped if unavailable) |
 | `no_vectorization` | `no-vectorization-<n>.csv` | same timings with SIMD auto-vectorisation off, to separate memory effects from SIMD |
+| `tile_sweep` | `tile-sweep.csv` | every version in `TILE_SWEEP_VERSIONS` (`tiled` row-major, `tiled_tile_wise` tile-wise layout, optionally `tiled_col_major`) at every tile size in `TILE_SIZES` and every size in `TILE_SWEEP_SIZES`, with a `row_wise` baseline per size. Tile-wise versions skip tile sizes that do not divide n. Not run by default: ask for it by name. Needs the program to accept `<variant> <size> <repetitions> <tile_size> <reference>`. Stops with an error if checksums differ. |
+
+| `oblivious` | `oblivious.csv` | cache-aware and cache-oblivious versions on row-major, column-major and tile-wise layouts, with plain-loop baselines, at every size in `OBLIVIOUS_SIZES` and every parameter in `OBLIVIOUS_PARAMS` (tile size, or smallest recursion block). Not run by default. Same checksum check. Tile-wise versions need n to be a multiple of the tile size. |
+
+```bash
+bash scripts/run.sh experiments/01-matrix-multiplication environment tile_sweep oblivious \
+    --out experiments/01-matrix-multiplication/results/<date>-<machine>
+```
 
 ## Layout
 
@@ -48,8 +56,12 @@ scripts/
     ├── environment.sh
     ├── timings.sh
     ├── cache_counters.sh
-    └── no_vectorization.sh
+    ├── no_vectorization.sh
+    ├── oblivious.sh
+    └── tile_sweep.sh
 ```
+
+Charts are made from the CSV files by a separate Python tool, see [plot/README.md](plot/README.md).
 
 ## What an experiment must provide
 
@@ -58,7 +70,7 @@ scripts/
    - `VARIANTS`: the versions to compare, space separated
    - `SIZES`: the problem sizes
 
-   Optional: `REPS`, `REPS_LARGE`, `LARGE_FROM`, `EXTRA_ARGS`, `COUNTER_SIZES` (empty skips `cache_counters`), `NOVEC_SIZE` (empty skips `no_vectorization`). Write optional settings as `: "${NAME:=value}"` so they can be overridden from the command line.
+   Optional: `REPS`, `REPS_LARGE`, `LARGE_FROM`, `EXTRA_ARGS`, `COUNTER_SIZES` (empty skips `cache_counters`), `NOVEC_SIZE` (empty skips `no_vectorization`), `TILE_SIZES` (empty skips `tile_sweep`), `TILE_SWEEP_SIZES`, `TILE_SWEEP_NAIVE_REFERENCE_MAX`, `OBLIVIOUS_PARAMS` (empty skips `oblivious`), `OBLIVIOUS_SIZES`. Write optional settings as `: "${NAME:=value}"` so they can be overridden from the command line.
 2. A program (the CMake target) that follows this contract:
    - It is called as `<executable> <variant> <size> <repetitions> [EXTRA_ARGS...]`.
    - It prints a CSV header line, then one result row, to **stdout**. Progress and error messages go to **stderr**.
@@ -75,7 +87,7 @@ Create `scripts/checks/<name>.sh` that defines a function `check_<name>`. That i
 - `$OUT_DIR` (where to write), `$TMP_DIR` (scratch space), `log`, `warn`, `die`
 - everything from the experiment's `benchmark.conf` (`$VARIANTS`, `$SIZES`, ...)
 
-To run the new check by default, add its name to `DEFAULT_CHECKS` in `run.sh`. Ideas for later: a tile-size sweep, a thread-scaling check, a memory-usage check.
+To run the new check by default, add its name to `DEFAULT_CHECKS` in `run.sh`. Ideas for later: a thread-scaling check, a memory-usage check.
 
 ## Line endings
 

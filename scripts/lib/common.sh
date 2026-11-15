@@ -34,7 +34,15 @@ load_experiment() {
     : "${LARGE_FROM:=1024}"
     : "${EXTRA_ARGS:=}"      # appended after <variant> <size> <repetitions>
     : "${COUNTER_SIZES:=}"   # empty = skip the cache_counters check
+    : "${COUNTER_VERSIONS:=$VARIANTS}"
+    : "${COUNTER_PARAMS:=$EXTRA_ARGS}"
     : "${NOVEC_SIZE:=}"      # empty = skip the no_vectorization check
+    : "${TILE_SIZES:=}"      # empty = skip the tile_sweep check
+    : "${TILE_SWEEP_VERSIONS:=tiled}"
+    : "${TILE_SWEEP_SIZES:=$SIZES}"
+    : "${TILE_SWEEP_NAIVE_REFERENCE_MAX:=1024}"
+    : "${OBLIVIOUS_PARAMS:=}"   # empty = skip the oblivious check
+    : "${OBLIVIOUS_SIZES:=$SIZES}"
 }
 
 # reps_for <size>
