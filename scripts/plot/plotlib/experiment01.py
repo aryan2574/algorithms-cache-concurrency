@@ -4,9 +4,10 @@ Every figure is a function `fig_<name>(run) -> matplotlib Figure`. FIGURES lists
 tables they need; make_figures.py skips a figure whose tables are not in the results folder.
 
 Tables (file stems of the results folder): tile-sweep, oblivious, timings, cache-counters,
-no-vectorization. A table in a sub-folder of the session is named "<sub-folder>/<stem>", for
-example "large-n/timings". Columns of the timing tables (tile-sweep, oblivious, timings):
-n, algorithm, tile_size, repetitions, median_ms, gflops, checksum.
+transpose, no-vectorization. A table in a sub-folder of the session is named
+"<sub-folder>/<stem>", for example "large-n/timings". Columns of the timing tables
+(tile-sweep, oblivious, timings, transpose): n, algorithm, tile_size, repetitions,
+median_ms, gflops, checksum. For transpose, gflops holds million elements/s.
 """
 
 from __future__ import annotations
@@ -147,6 +148,30 @@ def fig_timings_gflops(run: Run):
     ax.set_ylim(bottom=0)
     ax.set_title("Speed against matrix size")
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
+    _finish_layout(fig)
+    return fig
+
+
+def fig_transposed_b_vs_row_wise(run: Run):
+    """Professor case b literally: A row-major × B stored as Bᵀ, plain and tiled, against row_wise / tiled."""
+    df = run.tables["timings"]
+    want = ["row_wise", "transposed_b", "tiled", "tiled_transposed_b"]
+    if not set(want).issubset(set(df.algorithm)):
+        raise NotApplicable("timings.csv needs row_wise, transposed_b, tiled, tiled_transposed_b")
+    sizes = sorted(df.n.unique())
+    fig, ax = plt.subplots(figsize=(6.4, 3.8), layout="constrained")
+    order = ["naive", "transposed_b", "row_wise", "tiled_transposed_b", "tiled"]
+    for v in order:
+        sub = df[df.algorithm == v].sort_values("n")
+        if sub.empty:
+            continue
+        ax.plot(sub.n, sub.gflops, **{**style.style_for(v), "markersize": 5})
+    _power_of_two_axis(ax, sizes)
+    ax.set_xlabel("matrix dimension n")
+    ax.set_ylabel("GFLOPS (higher is better)")
+    ax.set_ylim(bottom=0)
+    ax.set_title("Store B transposed (ijk) vs reorder loops (row_wise), plain and tiled")
+    ax.legend(frameon=False, fontsize=7)
     _finish_layout(fig)
     return fig
 
@@ -524,6 +549,133 @@ def fig_vectorization(run: Run):
     return fig
 
 
+# ----------------------------------------------------------------------------- transposition
+
+def fig_transpose_cache_misses(run: Run):
+    """Cache counters for transposition: L1 miss rate, L1 misses per element, L2 misses.
+    Unlike multiplication, work is n^2 copies, so the middle panel is per element not per FMA.
+    Do not use _counter_frame here: that keeps only the largest tile size, but T=16 is fastest."""
+    df = _stack(run, "cache-counters")
+    sizes = sorted(df.n.unique())
+    order = ["transpose_naive", "transpose_tiled", "transpose_oblivious"]
+    versions = [v for v in order if v in set(df.algorithm)]
+    if len(versions) < 2:
+        raise NotApplicable("need at least two transpose versions in cache-counters.csv")
+
+    hatch = {"transpose_naive": "xx", "transpose_tiled": "", "transpose_oblivious": "//"}
+    preferred = 16  # best in the timing sweep
+    picked = []
+    for v in versions:
+        sub = df[df.algorithm == v]
+        if v == "transpose_naive":
+            picked.append(sub)
+            continue
+        rows = []
+        for _, g in sub.groupby("n"):
+            if (g.tile_size == preferred).any():
+                rows.append(g[g.tile_size == preferred].iloc[0])
+            else:
+                rows.append(g.loc[g.cache_misses_per_run.idxmin()])
+        picked.append(pd.DataFrame(rows))
+    plot_df = pd.concat(picked, ignore_index=True)
+    note = f"parameter = {preferred} (best in the timing sweep)"
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.9), layout="constrained")
+    ax1, ax2, ax3 = axes
+    width = 0.8 / len(versions)
+    for k, v in enumerate(versions):
+        xs, rate, per_el, misses = [], [], [], []
+        for i, n in enumerate(sizes):
+            row = plot_df[(plot_df.n == n) & (plot_df.algorithm == v)]
+            if row.empty:
+                continue
+            xs.append(i + (k - (len(versions) - 1) / 2) * width)
+            rate.append(float(row.l1_miss_rate_pct.iloc[0]))
+            per_el.append(float(row.l1_load_misses_per_run.iloc[0]) / float(n) ** 2)
+            misses.append(float(row.cache_misses_per_run.iloc[0]))
+        bar = {
+            "color": style.style_for(v)["color"],
+            "hatch": hatch[v],
+            "edgecolor": "black",
+            "linewidth": 0.4,
+        }
+        ax1.bar(xs, rate, width * 0.92, **bar)
+        ax2.bar(xs, per_el, width * 0.92, **bar)
+        ax3.bar(xs, misses, width * 0.92, **bar)
+        for x, value in zip(xs, rate):
+            ax1.text(x, value + 1, f"{value:.0f}%", ha="center", va="bottom", fontsize=7)
+    for ax in axes:
+        ax.set_xticks(range(len(sizes)), [str(n) for n in sizes])
+        ax.set_xlabel("matrix dimension n")
+        ax.grid(axis="x", visible=False)
+    misses_label = _misses_label(run)
+    ax1.set_ylabel("L1 data cache load miss rate (%)")
+    ax1.set_ylim(0, max(80, float(plot_df.l1_miss_rate_pct.max()) * 1.15))
+    ax2.set_ylabel("L1 load misses per element")
+    ax2.set_ylim(0, float(plot_df.l1_load_misses_per_run.div(plot_df.n.astype(float) ** 2).max()) * 1.25)
+    ax3.set_yscale("log")
+    ax3.set_ylabel(f"{misses_label} per transpose (perf cache-misses)")
+    positive = plot_df.cache_misses_per_run[plot_df.cache_misses_per_run > 0]
+    ax3.set_ylim(bottom=10 ** math.floor(math.log10(positive.min())) if len(positive) else 1)
+    ax1.set_title("L1 miss rate")
+    ax2.set_title("L1 misses per element")
+    ax3.set_title(f"{misses_label.capitalize()} (log scale)")
+    handles = [
+        Patch(facecolor=style.style_for(v)["color"], hatch=hatch[v], edgecolor="black",
+              label=style.style_for(v)["label"])
+        for v in versions
+    ]
+    fig.legend(handles=handles, loc="outside upper center", ncol=3, frameon=False)
+    if note:
+        fig.text(0.5, 0.045, note, ha="center", fontsize=6.5, color="#555555")
+    _finish_layout(fig, bottom=0.075 if note else 0.04)
+    return fig
+
+
+def fig_transpose_vs_n(run: Run):
+    """Out-of-place transposition: naive loops vs best tiled vs best oblivious against n.
+    The sixth CSV column is Melem/s for these versions."""
+    df = run.tables["transpose"]
+    needed = {"transpose_naive", "transpose_tiled", "transpose_oblivious"}
+    if not needed.issubset(set(df.algorithm)):
+        raise NotApplicable("transpose.csv needs transpose_naive, transpose_tiled and transpose_oblivious")
+
+    naive = df[df.algorithm == "transpose_naive"].set_index("n")
+    best = best_per_group(df[df.algorithm != "transpose_naive"], ["n", "algorithm"])
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.2, 3.6), layout="constrained")
+
+    ax = axes[0]
+    ax.plot(naive.index, naive.median_ms, **{**style.style_for("transpose_naive"), "markersize": 5})
+    for version in ("transpose_tiled", "transpose_oblivious"):
+        sub = best[best.algorithm == version].sort_values("n")
+        ax.plot(sub.n, sub.median_ms, **{**style.style_for(version), "markersize": 5})
+        for row in sub.itertuples():
+            ax.annotate(f"T={int(row.tile_size)}", (row.n, row.median_ms), textcoords="offset points",
+                        xytext=(4, 4), fontsize=6, color=style.style_for(version)["color"])
+    _power_of_two_axis(ax, list(naive.index), "x")
+    ax.set_yscale("log")
+    ax.set_xlabel("matrix size n")
+    ax.set_ylabel("median time (ms, log scale)")
+    ax.set_title("Transpose time vs n (best parameter per version)")
+    ax.legend(frameon=False, fontsize=7)
+
+    ax = axes[1]
+    for version in ("transpose_tiled", "transpose_oblivious"):
+        sub = best[best.algorithm == version].sort_values("n")
+        speedup = [naive.loc[n].median_ms / t for n, t in zip(sub.n, sub.median_ms)]
+        ax.plot(sub.n, speedup, **{**style.style_for(version), "markersize": 5})
+    ax.axhline(1.0, color="black", linewidth=0.8)
+    ax.axhspan(1 - style.NOISE_BAND, 1 + style.NOISE_BAND, color="#BBBBBB", alpha=0.35, zorder=0)
+    _power_of_two_axis(ax, list(naive.index), "x")
+    ax.set_xlabel("matrix size n")
+    ax.set_ylabel("speed-up over transpose_naive")
+    ax.set_title("Recursive / tiled against two nested loops")
+    ax.legend(frameon=False, fontsize=7)
+    _finish_layout(fig)
+    return fig
+
+
 # ----------------------------------------------------------------------------- quality of the measurement
 
 def fig_noise_check(run: Run):
@@ -569,6 +721,7 @@ FIGURES = {
     # access order: naive (i,j,k) against row_wise (i,k,j)
     "overview_baseline": (fig_timings_gflops, ["timings"]),
     "access_power_of_two": (fig_power_of_two, ["timings"]),
+    "transposed_b_vs_row_wise": (fig_transposed_b_vs_row_wise, ["timings"]),
     # all versions
     "overview_ranking": (fig_ranking, ["oblivious"]),
     "overview_gflops_vs_n": (fig_gflops_vs_matrix_size, ["oblivious"]),
@@ -578,6 +731,9 @@ FIGURES = {
     "tile_l3_sweep": (fig_l3_sweep, ["l3-sweep/timings"]),
     # cache-oblivious
     "oblivious_vs_aware": (fig_oblivious_vs_aware, ["oblivious"]),
+    # transposition (O(n^2))
+    "transpose_vs_n": (fig_transpose_vs_n, ["transpose"]),
+    "transpose_cache_misses": (fig_transpose_cache_misses, ["cache-counters"]),
     # hardware counters and compiler
     "cache_misses": (fig_cache_misses, ["cache-counters"]),
     "simd_vectorization": (fig_vectorization, ["timings", "no-vectorization"]),
