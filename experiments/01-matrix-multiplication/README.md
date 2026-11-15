@@ -1,8 +1,47 @@
-# Experiment 01: Memory-access order in matrix multiplication
+# Experiment 01: Matrix multiplication — cache, layouts and tiling
+
+**Findings (results + drawbacks in one place):** [docs/findings-log.md](../../docs/findings-log.md)  
+**Figures (charts to show and how to explain them):** [docs/01-matrix-multiplication/](../../docs/01-matrix-multiplication/README.md)
+
+## How to read this folder
+
+| You want… | Open |
+| --- | --- |
+| Agenda of what happened (below) | this README |
+| All results and drawbacks, short | [docs/findings-log.md](../../docs/findings-log.md) |
+| Charts for a talk or the thesis | [docs/01-matrix-multiplication/README.md](../../docs/01-matrix-multiplication/README.md) |
+| Full tables and theory of 14 Nov | [14-nov.txt](14-nov.txt) |
+| Cache theory notes | [01-nov.txt](01-nov.txt) |
+| Raw CSV | `results/<date>-<machine>/` |
+
+## Agenda — what happened in this experiment
+
+1. **Access order (October 2026)**  
+   Compared textbook `naive` loops (column walk on B) with `row_wise` and a first `tiled` version. Measured time, `perf` cache counters, and a no-SIMD build.  
+   → Results in this README (October section) · data `results/2026-10-18-ryzen5500u-wsl2/`
+
+2. **Three storage layouts + cache-aware + cache-oblivious (14 November)**  
+   Same product on **row-major**, **column-major** and **tile-wise** layouts; each with plain loops, cache-aware tiling, and cache-oblivious recursion (**nine versions**).  
+   → [14-nov.txt](14-nov.txt) · data `results/2026-11-14-ryzen5500u-wsl2-run2/` · charts under `docs/01-matrix-multiplication/figures/...-run2/`
+
+3. **Tile-size sweep and “does the tile fit?”**  
+   Tile sizes **T = 4 … 512** on row-major and tile-wise, for n = 256 … 2048. Answers: best T, U-shaped curve, behaviour when three tiles no longer fit L1/L2/L3.  
+   → Tables below and in 14-nov.txt · charts `tile_size_vs_time`, `tile_fit_regimes`
+
+4. **Cache regimes from the professor’s cases**  
+   - *Whole matrix > cache > single row:* n = 1024 and 2048 (measured fully).  
+   - *Single row > cache:* n = 4096 only **partly** measured (stopped on purpose: work grows as n³, full sweep >1 hour). n = 8192 does not fit in ~3 GB WSL memory.  
+   → 14-nov.txt §7.4 · `results/...-run2-n4096/`
+
+5. **Figures for presenting (15 November)**  
+   Python/matplotlib tool; all charts organised under `docs/01-matrix-multiplication/`. Multi-layout cache-counter run started then **stopped** (incomplete).  
+   → [15-nov.txt](15-nov.txt) · [docs/01-matrix-multiplication/README.md](../../docs/01-matrix-multiplication/README.md)
+
+**Professor’s weekly tasks — status:** (1) cache-oblivious on all three layouts — done · (2) cache-aware and compare — done · (3) different tile sizes / tile fit / matrix vs cache — done for n ≤ 2048; “single row > cache” only partial.
 
 ## Research question
 
-Matrices are stored row by row (row-major). Moving along a row follows memory order, while moving down a column jumps a whole row at a time. How much does this cost in matrix multiplication, and can changing the access order fix it? Can cache measurements explain the difference?
+How much does memory layout and access order cost in matrix multiplication? Can tiling (cache-aware) and recursion (cache-oblivious) fix it when the data no longer fits in cache? Can cache measurements explain the differences?
 
 ## Theory
 
@@ -23,17 +62,18 @@ A = [ 1  2  3  4  5]
 
    For `double` and `n = 512` that is 512 \* 8 = 4096 bytes. Almost every access touches a different cache line, so a vertical traversal can touch many cache lines even when the whole matrix is small.
 
-## The three versions (`main.cpp`)
+## Versions (`main.cpp`)
 
-All three compute the same product `C = A * B`. Matrices are stored in contiguous row-major order: element `(i, j)` is at `i * n + j`. They differ only in the order of memory accesses.
+All versions compute the same product `C = A * B` and produce identical checksums. The October work used the first three (row-major only). From 14 November there are **nine** versions: three layouts × (plain loops / cache-aware / cache-oblivious). Details: [14-nov.txt](14-nov.txt) §4.
 
-| Name       | Loop order                 | What the inner loop does to B                                        |
-| ---------- | -------------------------- | -------------------------------------------------------------------- |
-| `naive`    | i, j, k (textbook)         | `B[k*n + j]` changes k: walks **down a column** (stride `n*8` bytes) |
-| `row_wise` | i, k, j                    | `B[k*n + j]` changes j: walks **along a row** (contiguous)           |
-| `tiled`    | i, k, j inside 32x32 tiles | works on one small tile at a time so the data stays in cache         |
+| Name | Role |
+| ---- | ---- |
+| `naive` | Textbook i,j,k — inner loop walks **down a column** of B |
+| `row_wise` / `col_wise` | Plain loops matched to row-major / column-major |
+| `tiled` / `tiled_col_major` / `tiled_tile_wise` | Cache-aware tiling on each layout |
+| `oblivious_row_major` / `oblivious_col_major` / `oblivious_tile_wise` | Cache-oblivious recursion on each layout |
 
-Every run checks its result against `naive` (tolerance 1e-9) before timing. All three versions produce identical checksums at every size.
+Every run checks its result against a reference (`naive` or `row_wise`) before timing.
 
 ## How to build and run
 
@@ -43,9 +83,9 @@ From the repository root, see the main [README](../../README.md) for the build i
 ./build/experiments/01-matrix-multiplication/matrix_multiplication row_wise 512
 ```
 
-Usage: `matrix_multiplication <naive|row_wise|tiled> <n> [repetitions=7] [tile_size=32]`
+Usage: `matrix_multiplication <version> <n> [repetitions=7] [tile_size=32] [reference=naive|row_wise]`
 
-The program prints a CSV header and one result row.
+The program prints a CSV header and one result row. Version names are listed above.
 
 To reproduce all results (build, timings, cache counters, no-SIMD check, environment file) on Linux or WSL:
 
@@ -112,10 +152,78 @@ Without SIMD, `row_wise` is still **14x faster** than `naive` (versus 24.5x with
 2. Cache counters back this up: the column-wise version has about 8x more L1 misses and over 100x more last-level cache misses.
 3. Tiling pays off once the working set no longer fits in L3 (2x at n=1024). It does not at n <= 512.
 
-## Limitations
+## Results — November 2026: tile sizes, layouts, cache-aware and cache-oblivious
 
-- Counters are approximate under WSL2 virtualisation. Load counts are in the expected range but not exact (for example `naive` at n=512 should have about 268 M loads and shows 213 M). Use them for ratios, not absolute values.
-- The hardware counts only demand misses. Prefetched lines are not counted, so `row_wise` has few counted misses at n=1024 even though it streams B from L3 or memory.
-- **The counters do not explain why `tiled` beats `row_wise` at n=1024.** `tiled` actually shows more L1 misses (315 M against 133 M). The timing result is real, but the mechanism (better reuse of tiles from L2, less streaming of B from L3 and memory) is a hypothesis that these counters do not confirm.
-- Only a tile size of 32 was tested. Sizes stop at 1024; n=2048 was not run because the built-in `naive` reference check takes several minutes.
-- One machine, one compiler, `double` precision only, no multithreading.
+Measured on the same machine as above, but in a new session with the laptop on AC power and the Windows High performance plan (`results/2026-11-14-ryzen5500u-wsl2-run2/`, conditions in `run-conditions.txt`). Full method, theory, predictions and every table are in [14-nov.txt](14-nov.txt). A first run of the same day (`results/2026-11-14-ryzen5500u-wsl2/`) was noisy (Balanced plan, other programs open) and is kept but not used.
+
+New versions: the same product on three storage layouts (row-major, column-major, tile-wise = each tile contiguous), each with plain loops, a cache-aware tiled algorithm, and a cache-oblivious recursive algorithm (nine versions in total, see `14-nov.txt`, section 4). All give identical checksums.
+
+Noise: `row_wise` was timed twice per size in the same run and differed by 3% (n=1024, 2048) to 7% (n=512). Differences below about 10% are not reliable, and nothing can be read from n=256.
+
+**Tile size** (median ms, `tiled` on the row-major layout and `tiled_tile_wise` on the tile-wise layout):
+
+| n    | row_wise | row-major T=4 | T=32 | T=128 | T=512 | tile-wise T=4 | T=32 | T=128 | T=512 |
+| ---- | -------- | ------------- | ---- | ----- | ----- | ------------- | ---- | ----- | ----- |
+| 1024 | 619      | 2456          | 309  | 283   | 449   | 1027          | 267  | 232   | 257   |
+| 2048 | 4735     | 25061         | 3046 | 2502  | 5591  | 19000         | 2114 | 1846  | 2078  |
+
+- The curve over the tile size is U-shaped for n >= 1024 on both layouts. T=128 is best everywhere (T=64 is within 2% to 13%). The prediction from the cache sizes was T=16 to 64 (tiles fitting L1); the measured optimum is the L2-sized tile.
+- Very small tiles are much slower than no tiling at all (T=4 at n=2048 is 5.3 times slower than `row_wise`).
+- For n >= 1024 the best tile is 1.9 to 2.2 times faster than `row_wise` on row-major and about 2.6 times on tile-wise. At n=256 and n=512 tiling gives no clear gain.
+- **A tile that does not fit in cache:** on the row-major layout the time more than doubles from T=128 to T=512 at n=2048 (and is 18% worse than `row_wise`). On the tile-wise layout it only rises by 13%. At the same tile size the tile-wise layout is 13% to 18% faster at n=1024 and 25% to 32% faster at n=2048 (63% at T=512).
+- Why the tile-wise layout is faster was not measured in this session (no finished counters for all layouts; see Limitations). The likely reasons are conflict misses, TLB misses and prefetching, but these are hypotheses.
+
+**Layouts, cache-aware and cache-oblivious** (median ms, best parameter of each, n=2048):
+
+| Layout       | plain loops | cache-aware (tiled) | cache-oblivious |
+| ------------ | ----------- | ------------------- | --------------- |
+| row-major    | 4905        | 2333                | 2408            |
+| column-major | 4856        | 2787                | 2588            |
+| tile-wise    | -           | 1884                | 1819            |
+
+- Cache-oblivious is as fast as the best tuned cache-aware version on every layout (within 7%, which is about the noise level), without choosing a tile size. The expected 10% to 30% slowdown from the recursion did not appear.
+- Column-major mirrors row-major for the plain loops (within 2%). For the tiled versions it is similar but up to 20% slower at n=2048, for an unknown reason.
+- The fastest version overall at n=2048 is the cache-oblivious recursion on the tile-wise layout (1819 ms, 9.4 GFLOPS, 2.7 times faster than `row_wise`). `oblivious_tile_wise` is only partly oblivious: the tile size is part of the layout. A fully oblivious layout (Z-order) was not implemented.
+- The oblivious versions do depend somewhat on their parameter (smallest recursion block, up to about 20% at n=2048).
+
+**n = 4096 ("a row as large as L1")** is only partly measured on purpose: the work grows as n³, so one multiply already takes about 20 to 40 s and a full tile/layout/oblivious sweep was expected to take more than an hour. The session was stopped after four runs (see `results/2026-11-14-ryzen5500u-wsl2-run2-n4096/STOPPED.txt` and `14-nov.txt`, section 7.4). `row_wise` took 37.5 s (3.7 GFLOPS, the same speed per operation as at n=2048) and `tiled` with T=128 took 20.9 s (1.8 times faster). The expected extra slowdown of `row_wise` once the rows leave L1 was not seen. Large tile sizes (T up to 512) were already measured at n ≤ 2048; the wall-time limit is the matrix size, not the tile size. n=8192 does not fit in the 3 GB of memory of this WSL2.
+
+### Figures of the 2026-11-14 session
+
+All figures of this experiment (17 charts and 2 diagrams, with an explanation of each) are in [docs/01-matrix-multiplication/](../../docs/01-matrix-multiplication/README.md). They are generated from the CSV files with `scripts/plot/`. The grey bands mark the +-10 % noise level. Speed-ups in the figures use the `row_wise` row of the same CSV file, so they can differ by about 0.1 from the tables above. A selection:
+
+![Ranking of all versions](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/overview_ranking.png)
+
+![Time against tile size](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/tile_size_vs_time.png)
+
+![Tiles that fit and do not fit in cache](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/tile_fit_regimes.png)
+
+![Layouts compared](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/layout_comparison.png)
+
+Diagrams for the explanation (computed from the same index formulas as `main.cpp`): [memory layouts](../../docs/01-matrix-multiplication/diagrams/memory_layouts.png), [recursion of the cache-oblivious algorithm](../../docs/01-matrix-multiplication/diagrams/recursion_steps.png).
+
+## Dated session notes
+
+Theory, plans and results of each working day are kept in a text file named after the day, next to this README. Raw data goes to `results/<date>-<machine>/`; older folders are never overwritten.
+
+| Note | Topic | Data |
+| ---- | ----- | ---- |
+| `01-nov.txt` | Cache theory (levels, cache lines, misses, AMAT) | none |
+| `14-nov.txt` | Tile-size sweep, three layouts, cache-aware and cache-oblivious: theory, plan, full results | `results/2026-11-14-ryzen5500u-wsl2-run2/` (main); `...-run2-n4096/` (partial, stopped for time); `2026-11-14-ryzen5500u-wsl2/` (first run, noisy, not used) |
+| `15-nov.txt` | Figures for the report; `perf` available again; multi-layout cache-counter run started and stopped | figures in `docs/01-matrix-multiplication/`; partial counters in `results/2026-11-15-ryzen5500u-wsl2-counters/` (not a finished result) |
+
+Added on 2026-11-14 (the results above are unchanged, the old commands behave as before):
+
+- An optional fifth argument, `reference` (`naive` default, or `row_wise`), selects the version the result is checked against, so that large sizes do not spend minutes in the `naive` check.
+- Six more versions: `col_wise`, `tiled_col_major`, `tiled_tile_wise`, `oblivious_row_major`, `oblivious_col_major`, `oblivious_tile_wise`. They run the same multiplication on a column-major or tile-wise layout, cache-aware (tiled) or cache-oblivious (recursive). The input is converted to the layout before timing and the result is converted back for the check. Explained in `14-nov.txt`.
+- Two measurement checks, `tile_sweep` and `oblivious` (see [scripts/README.md](../../scripts/README.md)). They are not part of the default run.
+
+## Limitations / drawbacks
+
+The short list for the thesis outline is in [docs/findings-log.md](../../docs/findings-log.md) (Drawbacks and limits). Detail:
+
+- Counters under WSL2 are approximate (user-mode events; demand misses only). Use ratios, not absolute counts.
+- **The counters do not explain why `tiled` beats `row_wise` at n=1024** (`tiled` can show more L1 misses yet run faster). Mechanism remains a hypothesis.
+- No finished counters for all layouts (October: three versions only; multi-layout run of 2026-11-15 stopped — partial CSV only).
+- Large **n** limited by wall time (n³) and memory: n=4096 partial; n=8192 does not fit. Large **tiles** (T≤512) were measured at n≤2048.
+- Noise 3–7%; differences under ~10% unreliable. One machine, one thread, `double` only. No Z-order. No error bars. Code not committed when November timings were taken.

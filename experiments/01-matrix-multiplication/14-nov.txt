@@ -1,0 +1,466 @@
+14 Nov 2026 - Tile size, layouts, cache aware and cache oblivious (theory, plan, results)
+
+Notes for this day only. Cache theory in general is in 01-nov.txt.
+Main raw data of this day: results/2026-11-14-ryzen5500u-wsl2-run2/ (tile-sweep.csv, oblivious.csv).
+Also kept: results/2026-11-14-ryzen5500u-wsl2/ (first tile sweep, noisy, not used for conclusions)
+and results/2026-11-14-ryzen5500u-wsl2-run2-n4096/ (partial, stopped for time; see 7.4).
+Figures of this day's data (added 2026-11-15): docs/01-matrix-multiplication/.
+
+
+** 1. Task from the professor (this week)
+
+1. Cache oblivious for all three matrix types -> row major, column major, tile wise.
+2. Cache aware matrix multiplication, and compare the results.
+3. Try different tile sizes and compare results.
+   What if the whole matrix is greater than the cache size? How does multiplication behave?
+   What if the tile does not fit in the cache? How does it compute, what is the performance?
+   Cases: Whole matrix > Cache > Single row
+          Single row > Cache
+
+Clarified with the professor's wording: "three matrices" = three storage layouts
+(row major, column major, tile wise), not A, B, C.
+
+Final status (after run 2; this replaces the morning status):
+  task 1 (cache oblivious)  implemented and measured for all three layouts (n = 256..2048)
+  task 2 (cache aware)      implemented and measured for all three layouts; compared with
+                            plain loops and with cache-oblivious (see 7.3)
+  task 3 (tile size)        implemented and measured: T = 4..512 on row-major and tile-wise
+                            (n = 256..2048). "Tile does not fit cache" covered by T = 256 and
+                            T = 512 (see 7.2). "Whole matrix > cache > single row" covered by
+                            n = 1024 and n = 2048. "Single row > cache" only partly covered
+                            (n = 4096 stopped for wall time; see 7.4).
+  Why large n was limited: the work grows as n^3, so one multiply at n = 4096 already takes
+  about 20 to 40 s; a full tile + layout + oblivious sweep there was expected to take more
+  than an hour and was stopped on purpose. n = 8192 does not fit in the ~3 GB of this WSL2.
+  Large tile sizes themselves were measured (up to T = 512 at n <= 2048); the wall-time
+  problem is the large matrix dimension, not the tile size.
+
+
+** 2. Layouts (task 1 and 2)
+
+Until the morning only row major was used: element (i, j) is at i * n + j.
+Now there are three layouts (see main.cpp). The input is generated in row major, converted to the
+layout before timing, and the result is converted back for the check. The conversion is O(n^2)
+and not timed.
+  row major     (i, j) at i * n + j
+  column major  (i, j) at j * n + i
+  tile wise     T x T tiles, each tile stored as one contiguous block (row major inside the tile),
+                the tiles stored one after another. n must be a multiple of T.
+
+Hypothesis (from theory) for column major, to be confirmed or rejected by the measurement of
+col_wise against row_wise (it was first planned to skip it if it only mirrors row major):
+
+Column major is the mirror image of row major: element (i, j) is at j * n + i.
+In C[i][j] += A[i][k] * B[k][j], what matters is which direction the inner loop walks.
+  loop order i,j,k: A along a row, B down a column
+  loop order i,k,j: B along a row, C along a row   (fast in row major)
+  loop order j,k,i: A down a column, C down a column (fast in column major)
+So column major with a matching loop order should just rotate the result, not change it:
+  row major    + i,k,j  = fast     column major + j,k,i  = fast
+  row major    + i,j,k  = slow     column major + i,j,k  = slow (one strided stream, same as before)
+  column major + i,k,j  = slowest (B and C both strided)
+Expectation: col_wise (j,k,i on column major) about as fast as row_wise (i,k,j on row major).
+Not measured yet. If it is confirmed, the thesis can say that column major mirrors row major.
+
+Tile wise layout (each T x T tile stored contiguous) is NOT only a mirror. Possible differences:
+  - the tile is one block, so no cache line is half used
+  - no conflict misses from the row distance (at n=1024 rows are exactly 8 KiB apart)
+  - fewer TLB misses (a 32x32 tile in row major touches 32 pages, contiguous 2 pages)
+So this one may change the numbers. tiled (row major) against tiled_tile_wise (same loops, same
+tile size, only the layout differs) isolates exactly this effect.
+
+
+** 3. Theory: tile size (cache aware)
+
+The tiled version splits C = A * B into T x T tiles. For one (ii, jj, kk) step it uses a tile of A,
+a tile of B and a tile of C and computes all of C-tile += A-tile * B-tile before moving on.
+In the code (main.cpp) the loops are i, k, j inside the tile, so B-tile is read T times
+(once per row i) and a row of the C-tile is reused T times (over k).
+
+Size of a tile = T * T * 8 bytes (double).
+  B-tile alone (the part reused most):  8 * T^2
+  A, B and C tile together:            24 * T^2
+
+This machine (AMD Ryzen 5 5500U): L1d 32 KiB per core, L2 512 KiB per core, L3 4 MiB shared.
+
+  T      B-tile      3 tiles      fits (3 tiles)
+  4      128 B       384 B        L1 (but tiny)
+  8      512 B       1.5 KiB      L1
+  16     2 KiB       6 KiB        L1
+  32     8 KiB       24 KiB       L1  (the size used so far)
+  64     32 KiB      96 KiB       L2  (B-tile alone = whole L1)
+  128    128 KiB     384 KiB      L2
+  256    512 KiB     1.5 MiB      L3  (B-tile alone = whole L2)
+  512    2 MiB       6 MiB        no (more than L3)
+
+Memory traffic (why tiling helps): row_wise reads all of B again for every row i, that is about
+n^3 numbers from the level where B lives. With tiles, each tile is loaded once per step and reused
+T times, so the traffic is about 2 * n^3 / T numbers. Bigger T = less traffic, but only while the
+tiles stay in the cache level. This is the trade-off the sweep measures.
+
+What if the tile does not fit in cache?
+  The tile is then reused from the next, slower level (L1 -> L2 -> L3 -> RAM). There is no sudden
+  break, the speed drops in steps, one step per cache level. When T >= n the whole matrix is one tile
+  and tiled is the same as row_wise (the edge tiles are cut with std::min).
+
+Cases from the professor, for this machine (one matrix = 8 * n^2 bytes, one row = 8 * n bytes):
+
+  n      one row    one matrix    case
+  64     0.5 KiB    32 KiB        matrix about the size of L1, everything fits
+  256    2 KiB      512 KiB       matrix = L2 size
+  512    4 KiB      2 MiB         matrix fits in L3 only
+  1024   8 KiB      8 MiB         whole matrix > cache > single row  (matrix larger than L3, row fits L1)
+  2048   16 KiB     32 MiB        same case, two rows (B and C) = 32 KiB = whole L1, so L1 starts to be tight
+  4096   32 KiB     128 MiB       single row = L1 size
+  8192   64 KiB     512 MiB       single row > L1 (L2 would need n > 65536, not reachable)
+
+  Whole matrix > cache > single row: row_wise streams B again for every row i, memory bandwidth
+    limits it (2.9 GFLOPS at n=1024 against 7.9 at n=512). Tiling should help.
+  Single row > cache: even the C row can no longer stay in L1 while k runs, so row_wise also loses
+    that reuse and gets slower again. Tiling should matter even more. Needs n >= 4096.
+
+Prediction (hypothesis, to be compared with the measurement, not a result):
+  - T = 4, 8: slower than T = 16..64 (loop overhead and little reuse)
+  - T = 16..64: best, tiles fit L1/L2
+  - T = 128, 256: slower than the best, tiles only fit L2/L3
+  - T = 512 (and T >= n): close to row_wise
+  - so a U shaped curve with the minimum time around T = 16..64
+  - at n <= 512 little or no gain over row_wise (as seen with T = 32 in October)
+  - T = 64 may be worse than expected because of conflict misses when n is a power of two
+
+
+** 4. Theory: cache oblivious, and the nine versions
+
+Cache aware = the algorithm is tuned to the cache: the tile size T is chosen to fit a cache level.
+It needs a new T for every machine, and one T fits one level (L1 or L2), not all.
+
+Cache oblivious = the algorithm never uses the cache size. C += A * B is split recursively: the
+largest of the three dimensions (rows of C, columns of C, shared dimension k) is cut in half, the
+two halves are done one after the other, and so on until the block is small. Whatever the cache
+size is, at some depth of the recursion the blocks (side about sqrt(cache size / 3 / 8) doubles)
+fit into it, and all the work below that depth runs inside the cache. This works for L1, L2 and
+L3 at the same time, because every level of the recursion is a "tile" of a different size.
+Known result: this does as few cache misses (order n^3 / (line size * sqrt(cache size))) as the best
+tiling, without knowing the cache.
+
+Costs and limits:
+  - recursion has call overhead, so the recursion stops at a small block ("base"), where plain
+    loops run. The base only controls the overhead, it is not tuned to a cache. Parameter list in
+    the experiment shows if the result depends on it.
+  - on row major (and column major) a block is not contiguous: its rows are n * 8 bytes apart. At
+    n = power of 2 this can cause conflict misses (see section 3), also for the recursion.
+  - oblivious_tile_wise recurses over whole tiles, so the tile size T is in the layout. The
+    recursion is oblivious, the layout is not: it is a hybrid. A fully oblivious layout is Z order
+    (Morton), which is not implemented.
+  - the k halves are done in order, so each element of C is summed in the same order as in all other
+    versions and all checksums stay identical.
+
+The nine versions (main.cpp), parameter = last number on the command line:
+
+                    row major             column major          tile wise
+  plain loops       row_wise              col_wise              -
+  cache aware       tiled                 tiled_col_major       tiled_tile_wise
+  cache oblivious   oblivious_row_major   oblivious_col_major   oblivious_tile_wise
+  (naive = textbook i,j,k on row major, kept as the reference)
+
+  parameter of tiled, tiled_col_major, tiled_tile_wise, oblivious_tile_wise = tile size T
+  parameter of oblivious_row_major, oblivious_col_major = smallest block of the recursion
+
+Predictions (hypotheses, to be compared with the measurement, not results):
+  1. oblivious is close to the best cache aware version without any tuning, maybe 10% to 30%
+     slower because of the recursion overhead.
+  2. At n >= 1024 (matrix larger than L3) oblivious is clearly faster than the plain loops.
+  3. Column major versions mirror the row major versions.
+  4. Tile wise layout is at least as fast as row major, most visible when n is a power of 2 and
+     large (no conflict misses, fewer TLB misses).
+  5. The oblivious versions hardly depend on the base parameter, as long as it is not tiny.
+     (Tile size of the cache aware versions does matter, see section 3.)
+
+
+** 5. What was implemented today
+
+  - main.cpp: optional 5th argument "reference" (naive or row_wise). The result is checked against
+    this version before timing. Default is naive, as before, so old commands and old results are
+    unchanged. For n > 1024 the naive check takes minutes, so row_wise is used there.
+  - main.cpp: the six new versions of the table in section 4 (col_wise, tiled_col_major,
+    tiled_tile_wise, oblivious_row_major, oblivious_col_major, oblivious_tile_wise) and the layout
+    conversions. Tested for correctness: every run is checked against the reference before
+    timing. All nine versions give the same checksum at n=96. The row major and column major
+    versions also at n=100 and n=131 (not multiples of the tile or the base); the tile wise
+    versions need n to be a multiple of the tile and refuse other sizes.
+  - scripts/checks/tile_sweep.sh: new check "tile_sweep". For each matrix size: one row_wise run as
+    the baseline, then every version in TILE_SWEEP_VERSIONS for every tile size. Writes
+    tile-sweep.csv. All rows for the same n must have the identical checksum, otherwise the script
+    stops with an error. The professor asked specifically for the tile wise layout with different
+    tile sizes, so the default versions are tiled (row major) and tiled_tile_wise (tile wise, each
+    tile contiguous), with the same tile sizes, so the layout is the only difference. The tile wise
+    version cannot run when the tile does not divide n (for example T=512 at n=256: the tile
+    would be larger than the matrix); those combinations are skipped with a message and are
+    missing from the CSV. T = n (one tile) is allowed.
+  - scripts/checks/oblivious.sh: new check "oblivious". For each matrix size: row_wise and col_wise,
+    then the six parameter versions once per value of OBLIVIOUS_PARAMS. Writes oblivious.csv.
+    Same checksum check as tile_sweep. Tile wise versions need n to be a multiple of the tile size.
+  - benchmark.conf: TILE_SIZES, TILE_SWEEP_VERSIONS, TILE_SWEEP_SIZES,
+    TILE_SWEEP_NAIVE_REFERENCE_MAX, OBLIVIOUS_PARAMS, OBLIVIOUS_SIZES.
+  - The new checks are not in the default list, so "run all" works as before.
+
+Settings:
+  tile sizes (tile_sweep)       4 8 16 32 64 128 256 512
+  versions (tile_sweep)         tiled, tiled_tile_wise   (tiled_col_major only in the oblivious check)
+  parameters (oblivious)        32 64 128   (16 left out: clearly slower than 32 in the first sweep)
+  matrix sizes                  256 512 1024 2048    (4096 separately, see section 6)
+  repetitions                   7 below n=1024, 5 from n=1024 (median, one warm-up run)
+  reference                     naive up to n=1024, row_wise above
+
+
+** 6. How it was run (Ubuntu / WSL, from the repository root)
+
+Conditions of run 2 (also in results/.../run-conditions.txt): charger plugged in (AC), Windows
+power plan High performance (created from the Windows template, the laptop only had Balanced),
+Chrome closed, Cursor open. The code was NOT committed, so environment.txt says "uncommitted
+changes"; the git commit shown there (d088bb2) is the last commit before the changes of this day.
+
+The first run (results/2026-11-14-ryzen5500u-wsl2/) is kept as it is and not overwritten.
+
+Run 2 (tile sweep of both layouts and the oblivious comparison, n = 256 .. 2048), took about 50
+minutes:
+
+  TILE_SWEEP_NAIVE_REFERENCE_MAX=512 bash scripts/run.sh experiments/01-matrix-multiplication \
+       environment tile_sweep oblivious \
+       --out experiments/01-matrix-multiplication/results/2026-11-14-ryzen5500u-wsl2-run2
+
+  naive is the reference up to n=512, row_wise above (the naive check at n=1024 costs about 80
+  seconds per sweep). All checksums are identical, in every run and across the first run, run 2 and
+  October.
+
+Case "single row >= L1" (n = 4096), a reduced second session (one multiplication takes about 40 s
+or more): tile sizes 32..512, versions tiled and tiled_tile_wise, one oblivious parameter (128),
+3 repetitions, reference row_wise. It was STARTED AND STOPPED on purpose after 4 finished runs
+because of the time (more than an hour was expected); see 7.4 for what exists. Command used:
+
+  TILE_SIZES="32 64 128 256 512" TILE_SWEEP_SIZES=4096 OBLIVIOUS_SIZES=4096 OBLIVIOUS_PARAMS=128 \
+  REPS_LARGE=3 TILE_SWEEP_NAIVE_REFERENCE_MAX=512 bash scripts/run.sh \
+       experiments/01-matrix-multiplication environment tile_sweep oblivious \
+       --out experiments/01-matrix-multiplication/results/2026-11-14-ryzen5500u-wsl2-run2-n4096
+
+Not done: n = 8192 (a row larger than L1) does not fit: WSL has about 3 GB of memory and n=8192
+needs about 2 GB for row major and about 3.5 GB for the other layouts. Also not done: a size next
+to the power of 2 (for example 3968 = 31 * 128) to separate "too big for the cache" from
+"power of 2 conflict misses".
+
+
+** 7. Results
+
+All numbers are medians of 7 (n <= 512) or 5 (n >= 1024) runs after one warm-up run, in ms, on the
+AMD Ryzen 5 5500U (L1d 32 KiB, L2 512 KiB, L3 4 MiB), WSL2, g++ 15.2.0 -O3, double precision, one
+thread. Every run was checked against a reference before timing and all checksums are identical.
+Raw data: results/2026-11-14-ryzen5500u-wsl2-run2/ (tile-sweep.csv, oblivious.csv).
+
+How much to trust a number: row_wise was measured twice in run 2 (once in each check):
+  n=256   4.0 and 5.6 ms    (small n: noisy, do not read anything into differences at n=256)
+  n=512   31.2 and 33.6 ms  (7% apart)
+  n=1024  619 and 599 ms    (3% apart)
+  n=2048  4735 and 4905 ms  (3.5% apart)
+So differences below about 10% are not reliable at n >= 512, and not at all at n = 256.
+
+
+** 7.1 First run (kept, not used for conclusions)
+
+results/2026-11-14-ryzen5500u-wsl2/tile-sweep.csv, tile sweep of tiled only. Balanced power plan,
+other programs open. All 36 runs correct, but the timing was noisy:
+  - row_wise at n=512 measured 79 ms in the sweep, 30.1 to 31.0 ms in five repeats afterwards.
+  - tiled with T=512 at n=512 (the same computation as row_wise) measured 32.5 ms in the sweep and
+    742, 95 and 69 ms in three repeats afterwards.
+Its shape agrees with run 2 (best T 64..128 at n=1024, T=4 and T=512 slow), but it is replaced by
+run 2 for every number below.
+
+
+** 7.2 Tile size sweep, run 2 (tile-sweep.csv)
+
+Row major layout (version tiled), median ms:
+  n      row_wise    T=4     T=8    T=16    T=32    T=64   T=128   T=256   T=512   best T
+  256         4.0    11.2     6.1     4.7     3.8     3.5     3.4     4.0     3.9   (flat from T=32)
+  512        31.2   116.6    63.7    44.6    33.7    35.3    33.8    38.5    33.5   (flat from T=32)
+  1024      619.4  2455.7   884.7   450.6   308.6   288.1   283.1   313.0   449.4   128
+  2048     4735.4 25061.4  8358.1  4663.1  3045.6  2815.3  2501.7  2815.6  5591.3   128
+
+Tile wise layout (version tiled_tile_wise, each tile contiguous), median ms:
+  n      row_wise    T=4     T=8    T=16    T=32    T=64   T=128   T=256   T=512   best T
+  256         4.0     8.4     5.3     4.3     3.6     3.4     3.3     3.8       -     128 (flat)
+  512        31.2    78.6    51.6    38.9    30.7    29.1    28.0    33.0    30.7     128
+  1024      619.4  1027.3   679.1   328.1   267.0   236.6   232.4   265.5   256.8     128
+  2048     4735.4 18999.8  4984.7  2777.9  2114.1  1920.3  1845.7  2108.5  2078.3     128
+  ("-" = not run: T=512 is larger than n=256 and the tile wise layout needs n to be a multiple of T)
+
+Tile wise compared with row major, same tile size (negative = tile wise is faster):
+  n      T=32   T=64   T=128   T=256   T=512
+  512     -9%   -18%    -17%    -14%     -8%     (at n=512 differences under 10% are within noise)
+  1024   -13%   -18%    -18%    -15%    -43%
+  2048   -31%   -32%    -26%    -25%    -63%     (T=512: 2078 ms against 5591 ms, 2.7 times faster)
+
+Seen in the data:
+  1. The curve over the tile size is U shaped at n >= 1024, for both layouts. Very small tiles are
+     much slower than the plain loop (T=4 at n=2048: 25 s against 4.7 s for row_wise, 5.3 times
+     slower, also 19 s on the tile wise layout); the minimum is at T=128 in all four large cases;
+     T=64 is within 2% to 13% of it; T=32 is 9% to 22% above it on row major.
+  2. At n=1024 and n=2048 (whole matrix larger than L3, one row fits L1) the best tile is much
+     faster than row_wise: row major 2.2 times (n=1024) and 1.9 times (n=2048), tile wise 2.7 times
+     (n=1024) and 2.6 times (n=2048).
+  3. At n=256 and n=512 (matrix fits L2 or L3) tiling hardly helps: row major differences are
+     within noise. Tile wise at n=512 with T=64..128 is 7% to 17% faster than row_wise (29.1 and
+     28.0 ms against 31.2 or 33.6 ms), at the edge of the noise.
+  4. A tile that does not fit the cache (professor's question 4): the row major curve goes up
+     steeply: from T=128 (2502 ms) to T=512 (5591 ms) at n=2048 it more than doubles, and T=512 is
+     18% slower than row_wise (4735 ms). The tile wise curve is flat: T=128 1846 ms, T=256 2109 ms,
+     T=512 2078 ms (+13%). The B tile alone is 128 KiB at T=128 (fits L2), 512 KiB at T=256 (= L2) and
+     2 MiB at T=512 (fits L3 only). The steps follow the cache levels as predicted, but on the
+     tile wise layout the penalty is much smaller. At n=1024 T=512 is faster than row_wise on both
+     layouts (449 and 257 ms against 619 ms) because n=1024 still consists of 2 x 2 tiles.
+  5. T = n (one tile) is the same as row_wise, as predicted: at n=512 T=512 gives 33.5 ms
+     (row major) and 30.7 ms (tile wise) against 31.2 ms; at n=256 T=256 gives 4.0 ms.
+
+Why the tile wise layout is faster was not measured on this day (no cache counters in this
+session). Hypotheses: in the row major layout the rows of a tile are n*8 bytes apart (8 KiB
+at n=1024, 16 KiB at n=2048), which maps them to few cache sets (conflict misses) and to many
+different 4 KiB pages (TLB misses); in the tile wise layout a tile is one contiguous block, which
+also suits the hardware prefetcher. All three effects would be largest for large tiles, which is
+consistent with the data (-63% at T=512). Confirming this needs hardware counters for all layouts
+(October has counters only for naive / row_wise / tiled; a 2026-11-15 attempt for all nine
+versions was started and stopped, see 15-nov.txt).
+
+
+** 7.3 Layouts, cache aware and cache oblivious, run 2 (oblivious.csv)
+
+Parameter: tile size T for the tiled* versions and oblivious_tile_wise; smallest block of the
+recursion for oblivious_row_major and oblivious_col_major. Median ms, parameter 32 / 64 / 128:
+
+  n=1024                       param 32   param 64   param 128
+  row_wise (row major)                  599
+  col_wise (column major)               593
+  tiled           (row major)    327        289        296
+  tiled_col_major (col major)    317        276        328
+  tiled_tile_wise (tile wise)    267        240        235
+  oblivious_row_major            279        272        290
+  oblivious_col_major            283        267        296
+  oblivious_tile_wise            275        240        230
+
+  n=2048                       param 32   param 64   param 128
+  row_wise (row major)                 4905
+  col_wise (column major)              4856
+  tiled           (row major)   2779       2581       2333
+  tiled_col_major (col major)   2883       3090       2787
+  tiled_tile_wise (tile wise)   2138       1924       1884
+  oblivious_row_major           2911       2446       2408
+  oblivious_col_major           2912       3006       2588
+  oblivious_tile_wise           2017       1874       1819
+
+  n=512: all versions between 27.6 and 37.4 ms, row_wise 33.6; tile wise versions are the
+  fastest (27.6 to 31.8 ms), the others are within noise of row_wise.
+  n=256: all versions between 3.6 and 5.6 ms, no conclusion possible.
+  (Full table in oblivious.csv.)
+
+Seen in the data:
+  1. Cache oblivious against cache aware, best parameter of each, same layout:
+       n=1024  row major 272 vs 289 ms (-6%), column major 267 vs 276 (-3%), tile wise 230 vs 235 (-2%)
+       n=2048  row major 2408 vs 2333 (+3%), column major 2588 vs 2787 (-7%), tile wise 1819 vs 1884 (-3%)
+     All within 7%, which is about the noise. The oblivious versions need no tuned tile size and
+     are as fast as the tuned ones. Prediction 1 of section 4 (10% to 30% slower) was wrong.
+  2. Both beat the plain loops clearly at n >= 1024: for example n=2048, 4905 ms (row_wise)
+     against 2408 (oblivious_row_major) and 1819 ms (oblivious_tile_wise), 2.0 and 2.7 times faster.
+     The fastest of all versions at n=2048 is oblivious_tile_wise with parameter 128: 1819 ms,
+     9.4 GFLOPS against 3.5 GFLOPS for row_wise.
+  3. Column major mirrors row major for the plain loops: col_wise against row_wise 593 / 599 ms
+     (n=1024) and 4856 / 4905 ms (n=2048), within 1% to 2%. For the tiled versions it is similar
+     but not identical: at n=2048 tiled_col_major is 4%, 20% and 19% slower than tiled for T=32,
+     64 and 128 (at n=1024 between 5% faster and 11% slower). The reason is not known.
+  4. The tile wise layout is the fastest layout for all three kinds of algorithm at n >= 1024 and
+     also for the oblivious version: at n=2048 oblivious_tile_wise (1819 ms) against
+     oblivious_row_major (2408 ms), 24% faster. This confirms the result of 7.2 with a second
+     algorithm.
+  5. Parameter of the oblivious versions: they are not independent of it. Row major at n=2048:
+     base 64 / 128 give 2446 / 2408 ms against 2911 ms for 32 (32 is 21% slower than 128).
+     Column major at n=2048: 2912 / 3006 / 2588 ms for 32 / 64 / 128, not monotonic (128 is 13%
+     better than 32, but 64 is not better than 32), so this part is irregular or noisy. At n=1024
+     the spread is 7% (row major) and 11% (column major). A small base block probably costs call
+     overhead (not measured separately). On tile wise the parameter is the tile size of the
+     layout and behaves like the tile size in 7.2 (128 best, 19% better than 32 at n=1024).
+
+
+** 7.4 n = 4096, "single row >= L1" (run2-n4096): PARTIAL, stopped on purpose
+
+The session was started (reduced set, see section 6) and stopped after 4 of the planned runs of
+the tile sweep because it would have taken more than an hour. The oblivious check and the tile
+wise layout were not run at n=4096; T=256 and T=512 were not finished. The 4 finished rows are in
+results/2026-11-14-ryzen5500u-wsl2-run2-n4096/tile-sweep.csv (3 repetitions each; the final
+checksum comparison did not run, but all four rows have the same checksum, -49764.049893).
+
+  n=4096     row_wise   T=32     T=64     T=128   (median ms, row major layout, version tiled)
+             37524      28664    24314    20853
+  GFLOPS     3.66       4.79     5.65     6.59
+
+  - The best finished tile (T=128) is 1.8 times faster than row_wise, about the same gain as at
+    n=2048 (1.9 times, 6.9 GFLOPS there).
+  - row_wise does not get slower per operation than at n=2048: 3.66 GFLOPS against 3.63 GFLOPS
+    (4735 ms at n=2048). The prediction of section 3, that row_wise loses more once the inner
+    loop (a row of B and a row of C, 64 KiB at n=4096) no longer fits L1, was NOT seen. Possible
+    reason (hypothesis, not measured): row_wise is already limited by streaming B from L3/RAM
+    from n=1024 on, and that limit does not get worse when the rows leave L1.
+  - Limits: only the row major layout, only three tile sizes, 3 repetitions, one session, no
+    check of the noise at this size. Treat as indicative, not as a result of the same quality
+    as 7.2 and 7.3.
+  - Not measured: whether the tile wise layout and the oblivious versions keep their advantage at
+    n=4096, and the tile sizes T=256 and T=512 there.
+
+
+** 7.5 Answers to the planned questions and the predictions
+
+  1. Best T: T=128 for n >= 1024 on both layouts (n=512 and 256: flat from T=32). The cache size
+     predicted T=16..64 (tiles that fit L1). The measured optimum is the L2 sized tile (3 tiles
+     of 128 x 128 doubles = 384 KiB, L2 = 512 KiB). T=64 is close behind. The prediction was
+     partly wrong. (Reason not measured, see 7.2.)
+  2. The curve goes up again for large T: T=256 is 11% to 14% above the best, and T=512 is
+     much worse on row major (+59% at n=1024: 449 against 283 ms; +123% at n=2048) and mildly
+     worse on tile wise (+11% at n=1024, +13% at n=2048).
+  3. Tiling beats row_wise only for n >= 1024 on row major (2.2 and 1.9 times); at n=256 and
+     n=512 there is no gain. October gave the same (gain only at n=1024; n=2048 is new).
+  4. n = 4096: only partly measured (7.4). row_wise runs at the same speed per operation as at
+     n=2048 (3.7 GFLOPS), and tiled with T=128 is 1.8 times faster than row_wise. The case
+     "single row > cache" is therefore only covered by this indicative result (row major,
+     T = 32..128); it is not fully measured. n=8192 (row clearly larger than L1) was not possible.
+  5. Prediction of section 3: right for the U shape, for T=4/8 being slow, for T=512 being bad on
+     row major, for T >= n equal to row_wise and for no gain at n <= 512. Wrong for the best T
+     (L2 sized, not L1 sized) and for the worry about T=64 (no special penalty seen in run 2; the
+     slow T=64 at n=2048 in the first run, 4271 ms, was noise).
+  6. col_wise is as fast as row_wise (within 2%): column major mirrors row major for the plain
+     loops. Column major tiled is similar to row major tiled, up to 20% slower at n=2048.
+  7. Yes: the tile wise layout beats row major with the same tile size and the same loops, by
+     13% to 18% (n=1024) and 25% to 32% (n=2048), and by 43% / 63% at T=512.
+  8. Oblivious is as fast as the best cache aware version on every layout (within 7%, which is the
+     noise level).
+  9. They do depend on it somewhat: up to 21% between parameters on row major at n=2048, 13% on
+     column major (not monotonic), up to 7% to 11% at n=1024 (see 7.3, point 5).
+  10. Predictions of section 4: 1 wrong (oblivious is not slower), 2 right (oblivious is 2.0 to 2.7
+      times faster than the plain loops at n >= 1024), 3 right for the plain loops and roughly right
+      for tiled, 4 right (tile wise is the fastest layout at n >= 1024), 5 partly wrong (the
+      parameter changes the time by up to 21%, not "hardly").
+
+
+** 8. What is still missing / limits
+
+  - Hardware counters for all nine versions / three layouts: not finished. October has counters
+    only for naive, row_wise and tiled (row-major). A full-counter run was started on 2026-11-15
+    (perf is available again) and stopped on purpose; see 15-nov.txt. Explanations of WHY the
+    tile-wise layout wins (conflict misses, TLB, prefetching) remain hypotheses.
+  - "Single row > cache" is only partly covered, on purpose because of wall time: work grows as
+    n^3, so n = 4096 is about eight times more work than n = 2048 (one multiply ~20 to 40 s). The
+    n = 4096 session was stopped after 4 runs (row major only, T = 32..128, see 7.4); a full
+    sweep there was expected to take more than an hour. Tile-wise and oblivious at n = 4096 are
+    not measured. n = 8192 (a row larger than L1) does not fit in the ~3 GB of WSL memory
+    (needs about 2 to 3.5 GB). Large tile sizes (T up to 512) were measured at n <= 2048; they
+    are not what made the runs too long.
+  - One machine, one compiler, double, one thread. Noise is 3% to 7% (n >= 512).
+  - Z order (the fully oblivious layout) is not implemented; oblivious_tile_wise still has the
+    tile size in the layout.
+  - The column major tiled versions differ up to 20% from row major tiled at n=2048, not explained.
+  - Code not committed when measured (see section 6).
+  - Charts for this day's data are in docs/01-matrix-multiplication/ (added 2026-11-15).

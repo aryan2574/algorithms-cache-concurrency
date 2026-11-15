@@ -19,16 +19,24 @@ master-thesis/
 ├── .gitattributes                   # keeps .sh and .conf files on Unix line endings
 ├── .gitignore
 ├── docs/
-│   └── findings-log.md              # one short entry per experiment
+│   ├── findings-log.md              # one short entry per experiment
+│   └── 01-matrix-multiplication/    # generated figures of experiment 01 (one folder per experiment)
+│       ├── README.md                # what every figure shows and how to explain it
+│       ├── diagrams/
+│       └── figures/<session>/
 ├── scripts/                         # shared benchmark tooling for all experiments
 │   ├── README.md                    # how to use it, add an experiment or a check
 │   ├── run.sh                       # entry point: run.sh <experiment> [check ...]
 │   ├── lib/common.sh
-│   └── checks/                      # one file per check
-│       ├── environment.sh
-│       ├── timings.sh
-│       ├── cache_counters.sh
-│       └── no_vectorization.sh
+│   ├── checks/                      # one file per check
+│   │   ├── environment.sh
+│   │   ├── timings.sh
+│   │   ├── cache_counters.sh
+│   │   ├── no_vectorization.sh
+│   │   ├── tile_sweep.sh
+│   │   └── oblivious.sh
+│   └── plot/                        # Python + matplotlib: CSV results -> figures
+│       └── README.md
 └── experiments/
     └── 01-matrix-multiplication/
         ├── README.md                # report: question, theory, method, results, conclusions
@@ -47,14 +55,15 @@ master-thesis/
 - Each experiment is self-contained: its code, build file, benchmark settings (`benchmark.conf`), raw results and written findings all live in its own directory under `experiments/`. Start with that experiment's `README.md`.
 - Measuring is done by the shared tooling in `scripts/`, so every experiment is measured the same way. You pass it an experiment's `benchmark.conf` (or directory) and choose which checks to run. See [scripts/README.md](scripts/README.md).
 - Each measurement session gets its own dated folder under the experiment's `results/` (`<date>-<machine>`), with an `environment.txt` describing the hardware and toolchain. Old runs are not overwritten.
-- `docs/findings-log.md` summarises the findings of all experiments in one place and links to each experiment's report.
+- Charts for the report are generated from the results CSV files by `scripts/plot/` (Python + matplotlib) and stored in `docs/<experiment>/figures/<session>/` (PDF and PNG), with the conceptual diagrams in `docs/<experiment>/diagrams/`. Each experiment folder in `docs/` has a README that explains every figure. See [scripts/plot/README.md](scripts/plot/README.md).
+- `docs/findings-log.md` is the short, presentable summary of **results and drawbacks** for every experiment. Each experiment’s own `README.md` holds the **agenda** (what was done) and the detailed write-up.
 - Build output and generated files belong in the build directory; they should not be committed to the repository.
 
 ## Experiments
 
 | # | Experiment | Question | Report |
 |---|---|---|---|
-| 01 | Matrix multiplication | How does memory-access order (row-wise versus column-wise) affect speed, and can cache measurements explain it? | [README](experiments/01-matrix-multiplication/README.md) |
+| 01 | Matrix multiplication | Access order, three layouts, cache-aware vs cache-oblivious, tile size vs cache | [README](experiments/01-matrix-multiplication/README.md) (agenda) · [findings](docs/findings-log.md) · [figures](docs/01-matrix-multiplication/README.md) |
 
 To add a new experiment:
 

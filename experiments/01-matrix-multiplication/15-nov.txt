@@ -1,0 +1,66 @@
+15 Nov 2026 - Figures for the report, and a stopped cache-counter attempt
+
+Notes for this day only. Theory and timing results of the weekly tasks are in 14-nov.txt.
+Cache theory in general is in 01-nov.txt.
+
+
+** 1. What was done today
+
+1. Python + matplotlib plotting tool under scripts/plot/ (see scripts/plot/README.md).
+   Figures and diagrams live in docs/01-matrix-multiplication/ (not next to the CSV files),
+   one folder per experiment so later experiments stay separate. What each figure shows and
+   how to explain it: docs/01-matrix-multiplication/README.md.
+
+2. Regenerated charts from:
+   - results/2026-11-14-ryzen5500u-wsl2-run2/   (main: tile sizes, layouts, aware vs oblivious)
+   - results/2026-10-18-ryzen5500u-wsl2/         (October: naive / row_wise / tiled, counters, SIMD)
+
+3. Hardware counters (perf): Ubuntu's linux-tools-generic package provides /usr/bin/perf and
+   the four events we use work under WSL2 (user-mode only, event names end in ":u"). The
+   cache_counters check was extended to all nine versions (COUNTER_VERSIONS / COUNTER_PARAMS
+   in benchmark.conf). A measurement was started:
+
+     COUNTER_SIZES="512 1024 2048" bash scripts/run.sh experiments/01-matrix-multiplication \
+          environment cache_counters \
+          --out experiments/01-matrix-multiplication/results/2026-11-15-ryzen5500u-wsl2-counters
+
+   It was STOPPED on purpose before finishing (user request: skip for now). Partial CSV kept;
+   see results/.../STOPPED.txt. Do not treat that folder as a finished result.
+
+
+** 2. Wall time / why large cases stay incomplete
+
+The multiplication work grows as n^3. Rough wall times on this machine (one multiply):
+  n = 2048   about 2 to 5 s (depending on the version)
+  n = 4096   about 20 to 40 s
+  n = 8192   does not fit in the ~3 GB of this WSL2
+
+So a full tile-size + layout + oblivious sweep at n = 4096 was expected to take more than an
+hour and was stopped on 2026-11-14 (see 14-nov.txt, 7.4). Large tile sizes (T up to 512) were
+already measured at n <= 2048; the bottleneck for "too long" is the matrix dimension n, not
+the tile size. The same reason applies to finishing the multi-layout cache-counter run at
+n = 2048 (each version is measured twice under perf, with 1 and 4 repetitions).
+
+
+** 3. Status of the professor's tasks (unchanged from the end of 14-nov, confirmed today)
+
+  1. Cache-oblivious, three layouts     done (code + measurements + charts)
+  2. Cache-aware, compare               done (code + measurements + charts)
+  3. Different tile sizes / tile fit    done for n <= 2048 (charts: tile_size_vs_time,
+                                        tile_fit_regimes). "Whole matrix > cache > single row"
+                                        done (n = 1024, 2048). "Single row > cache" only
+                                        partly (n = 4096 partial; stopped for wall time).
+
+Still open (honest gaps, also in 14-nov.txt section 8 and the experiment README):
+  - finish or drop the multi-layout cache-counter run (perf is ready)
+  - tile-wise and oblivious at n = 4096 (optional; wall time)
+  - Z-order layout (not implemented)
+  - error bars (program prints only the median)
+
+
+** 4. Where to look
+
+  Theory / tables of 14 Nov     14-nov.txt, experiments/.../README.md (Update 2026-11-14)
+  Figures + how to explain them docs/01-matrix-multiplication/README.md
+  Plot tool                     scripts/plot/README.md
+  Findings summary              docs/findings-log.md
