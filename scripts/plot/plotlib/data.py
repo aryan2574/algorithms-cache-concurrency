@@ -3,6 +3,8 @@
 A results folder is one dated measurement session, for example
 experiments/01-matrix-multiplication/results/2026-11-14-ryzen5500u-wsl2-run2/.
 It holds environment.txt and any of the CSV files written by the scripts in scripts/checks/.
+Extra runs of the same session may sit in sub-folders (for example large-n/); their tables are
+named "<sub-folder>/<stem>".
 """
 
 from __future__ import annotations
@@ -126,15 +128,9 @@ def load_run(folder: Path) -> Run:
         notes.append("no environment.txt: default machine description (32 KiB / 512 KiB / 4 MiB) is used")
 
     run = Run(folder=folder, name=folder.name, machine=machine, notes=notes)
-
-    for stem in ("tile-sweep", "oblivious", "timings", "cache-counters"):
-        path = folder / f"{stem}.csv"
-        if path.is_file() and path.stat().st_size > 0:
-            table = pd.read_csv(path)
-            # older cache-counters.csv had no tile_size column; treat that as 0 (no parameter)
-            if stem == "cache-counters" and "tile_size" not in table.columns:
-                table.insert(2, "tile_size", 0)
-            run.tables[stem] = table
+    _read_tables(folder, "", run.tables)
+    for sub in sorted(p for p in folder.iterdir() if p.is_dir()):
+        _read_tables(sub, f"{sub.name}/", run.tables)
 
     novec = sorted(folder.glob("no-vectorization-*.csv"))
     if novec and novec[0].stat().st_size > 0:
@@ -144,28 +140,15 @@ def load_run(folder: Path) -> Run:
     return run
 
 
-SPEED_STEMS = ("oblivious", "tile-sweep", "timings")
-
-
-def _concat_speed(frames: list[pd.DataFrame]) -> pd.DataFrame:
-    table = pd.concat(frames, ignore_index=True)
-    return table.drop_duplicates(subset=["n", "algorithm", "tile_size"], keep="first")
-
-
-def speed_table(run: Run) -> tuple[pd.DataFrame, str] | None:
-    """Timing rows (n, algorithm, tile_size, median_ms, gflops) to put next to hardware counters.
-
-    The counters session does not time the versions (the counters are measured under `perf`).
-    Its own timing tables are used if it has any; otherwise the newest sibling session of the same
-    experiment that has an oblivious.csv. Returns (table, name of the session the speeds come from)."""
-    own = [run.tables[s] for s in SPEED_STEMS if s in run.tables]
-    if own:
-        return _concat_speed(own), run.name
-    for sibling in sorted((p for p in run.folder.parent.iterdir() if p.is_dir() and p != run.folder), reverse=True):
-        if (sibling / "oblivious.csv").is_file():
-            frames = [pd.read_csv(sibling / f"{s}.csv") for s in SPEED_STEMS if (sibling / f"{s}.csv").is_file()]
-            return _concat_speed(frames), sibling.name
-    return None
+def _read_tables(folder: Path, prefix: str, tables: dict[str, pd.DataFrame]) -> None:
+    for stem in ("tile-sweep", "oblivious", "timings", "cache-counters"):
+        path = folder / f"{stem}.csv"
+        if path.is_file() and path.stat().st_size > 0:
+            table = pd.read_csv(path)
+            # older cache-counters.csv had no tile_size column; treat that as 0 (no parameter)
+            if stem == "cache-counters" and "tile_size" not in table.columns:
+                table.insert(2, "tile_size", 0)
+            tables[prefix + stem] = table
 
 
 def best_per_group(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
