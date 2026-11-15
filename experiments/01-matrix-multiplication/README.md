@@ -1,6 +1,6 @@
 # Experiment 01: Matrix multiplication and the cache
 
-**Status:** done (2026-10-13 to 2026-11-15). Short version: [docs/findings.md](../../docs/findings.md). What was asked and when: [docs/agenda.md](../../docs/agenda.md). Hardware background: [docs/theory/caches.md](../../docs/theory/caches.md).
+**Status:** done (multiplication 2026-10-13 to 2026-11-15; transposition measured 2026-11-15). Short version: [docs/findings.md](../../docs/findings.md). What was asked and when: [docs/agenda.md](../../docs/agenda.md). Hardware background: [docs/theory/caches.md](../../docs/theory/caches.md).
 
 ## 1. Question
 
@@ -9,10 +9,13 @@
 1. Matrices are stored row by row. Walking along a row is cache friendly, walking down a column is not. How much does that cost, and can it be improved? (2026-10-13)
 2. How many cache misses should each version have in theory, what is the lower bound, and how do the versions behave when the whole matrix fits in the cache, when only a row fits, and when not even a row fits? Which cache are we measuring? (2026-11-01)
 3. Do cache-aware (tiled) and cache-oblivious (recursive) algorithms help, on row-major, column-major and tile-wise storage? How does the tile size matter, and what happens when the tile or the matrix does not fit in the cache? (2026-11-14)
+4. The cache-oblivious paper studies a simpler problem first: matrix transposition `B = Aᵀ`. Two nested loops vs a recursive algorithm; work is O(n²), so larger matrices than multiplication are reachable.
 
 ## 2. Versions
 
-All in [`main.cpp`](main.cpp). Every version computes the same product with the same summation order and prints the same checksum; each run checks its result against a reference version before timing.
+All in [`main.cpp`](main.cpp). Every version of a given problem computes the same answer and prints the same checksum; each run checks its result against a reference version before timing.
+
+### Multiplication
 
 | | row-major | column-major | tile-wise |
 | --- | --- | --- | --- |
@@ -24,6 +27,25 @@ All in [`main.cpp`](main.cpp). Every version computes the same product with the 
 - `tiled` does the `row_wise` loops on one `T x T` tile of A, B and C at a time, so the three tiles can stay in the cache.
 - Layouts: row-major stores element (r, c) at `r*n + c`, column-major at `c*n + r`, tile-wise stores each `T x T` tile as one contiguous block. The input is converted to the layout before timing.
 - Cache-oblivious: the largest of the three loop ranges is halved recursively until the block is small. It never uses a cache size; at some depth the blocks fit in every cache level by themselves. On the tile-wise layout the tile size is part of the layout, so that version is only partly oblivious.
+
+### Transposition (out of place, both matrices row-major)
+
+| Version | Idea |
+| --- | --- |
+| `transpose_naive` | two nested loops: read a row of A, write a column of B (strided writes) |
+| `transpose_tiled` | same copy in `T x T` tiles (cache-aware) |
+| `transpose_oblivious` | recursively split the longer side until the block is small (cache-oblivious) |
+
+The sixth CSV column is still named `gflops` for the shared program format; for transpose it holds **million elements copied per second**.
+
+### Multiplication with B stored transposed (professor case b, literally)
+
+| Version | Idea |
+| --- | --- |
+| `transposed_b` | A row-major, B replaced by Bᵀ (outside the timed region); loops **i,j,k** so both streams walk contiguously in k |
+| `tiled_transposed_b` | the same, in `T x T` tiles |
+
+Previously case b was only covered by `row_wise` (same access *pattern*, B still row-major). These versions store Bᵀ for real.
 
 ![The three layouts: same colour = same 64-byte cache line](../../docs/01-matrix-multiplication/diagrams/memory_layouts.png)
 
@@ -70,6 +92,9 @@ The model is the ideal cache: one cache of `Z` elements with lines of `L` elemen
 | `2026-11-14-ryzen5500u-wsl2-run2-n4096` | four runs at n = 4096, stopped for time | indicative only |
 | `2026-11-14-ryzen5500u-wsl2` | first tile sweep, noisy (Balanced power plan) | not used |
 | `2026-11-15-ryzen5500u-wsl2-counters` | counters for all nine versions, stopped | not used (partial) |
+| `2026-11-15-ryzen5500u-wsl2-transpose` | transpose naive / tiled / oblivious, n = 1024…8192 | transposition timings |
+| `2026-11-15-ryzen5500u-wsl2-transpose-counters` | transpose perf counters, n = 1024…4096 | transposition L1/L2 |
+| `2026-11-15-ryzen5500u-wsl2-transposed-b` | `transposed_b` / `tiled_transposed_b` vs `row_wise` / `tiled` | case b literally |
 
 ## 5. Results
 
@@ -145,6 +170,39 @@ Only partly measured, on purpose: one multiplication takes 20-40 s and the full 
 
 The same configuration measured twice in one session differs by 4.1% (median of 28 pairs; 3.2% for n ≥ 512), see [quality_noise_check](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/quality_noise_check.png). Differences under about 10% are treated as noise, and n = 256 (a few milliseconds per run) is not used for conclusions. Absolute times also depend on the power plan of the laptop; ratios and miss counts repeat between sessions.
 
+### 5.8 Transposition (`B = Aᵀ`)
+
+![naive vs best tiled vs best recursive transpose](../../docs/01-matrix-multiplication/figures/2026-11-15-ryzen5500u-wsl2-transpose/transpose_vs_n.png)
+
+Out-of-place transposition on the same machine (session `2026-11-15-…-transpose`). Work is O(n²), so n = 8192 finishes in about a second where multiplication would take minutes.
+
+| n | `transpose_naive` | best tiled | best oblivious | speed-up |
+| --- | ---: | ---: | ---: | ---: |
+| 1024 | 13.3 ms | 5.6 ms (T=16) | **4.3 ms (base=16)** | **3.1×** |
+| 2048 | 151.6 ms | 25.9 ms (T=16) | **25.4 ms (base=16)** | **6.0×** |
+| 4096 | 665 ms | 123 ms (T=16) | **121 ms (base=16)** | **5.5×** |
+| 8192 | 4171 ms | 1293 ms (T=16) | **1024 ms (base=16)** | **4.1×** |
+
+Checksums match within each n. The recursive version matches the best tiled choice for n ≤ 4096 and is clearly ahead at n = 8192. Parameter 16 wins every time; T ≥ 32 falls off (at n = 4096, tiled T=16 → T=32 is 123 → 410 ms). Naive throughput drops with n (79 → 16 Melem/s) because the column writes leave the cache. At n = 8192 one row is already larger than L1.
+
+![transpose cache counters](../../docs/01-matrix-multiplication/figures/2026-11-15-ryzen5500u-wsl2-transpose-counters/transpose_cache_misses.png)
+
+Counters (n = 1024…4096, parameter 16): recursive has **5–10×** fewer L2 misses than nested loops. L1 miss *rate* can look worse for the fast versions; L1 misses *per element* and L2 misses agree with the timings. Counters at n = 8192 were not run: **CPU-time limit** under `perf` on this laptop (see §7).
+
+### 5.9 Store B transposed (`transposed_b` / `tiled_transposed_b`)
+
+![B transposed vs row_wise](../../docs/01-matrix-multiplication/figures/2026-11-15-ryzen5500u-wsl2-transposed-b/transposed_b_vs_row_wise.png)
+
+| n | `naive` | `transposed_b` | `row_wise` | `tiled_transposed_b` | `tiled` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 512 | 907 ms | 112 ms | **37 ms** | 68 ms | 40 ms |
+| 1024 | 10469 ms | 1166 ms | 896 ms | 527 ms | **381 ms** |
+| 2048 | skipped* | 9749 ms | 8149 ms | 4470 ms | **4271 ms** |
+
+\*Skipped: **CPU-time limit** — `naive` is O(n³); ~10 s median at n = 1024 on this Ryzen 5 5500U, about eight times more work at n = 2048, and the default reference check is also naive (`STOPPED.txt` in that results folder).
+
+Storing Bᵀ + ijk already beats `naive` a lot (contiguous k-streams). It still loses to `row_wise` (same idea, better loop / SIMD shape without changing layout). Tiling on Bᵀ nearly matches ordinary `tiled` at n = 2048 (~4% slower).
+
 ## 6. Conclusions
 
 1. **Access order is the main effect.** Walking along rows instead of down columns makes the same arithmetic 2.4-3.4x faster at ordinary sizes and 9-24x at powers of two, where cache-set conflicts and, at n = 1024, the TLB add to it. Vectorisation is a small part (1.2x).
@@ -153,13 +211,16 @@ The same configuration measured twice in one session differs by 4.1% (median of 
 4. **Cache-oblivious recursion matches tuned tiling** without knowing any cache size, so the question "which tile size?" mostly disappears.
 5. **Storing tiles contiguously** (tile-wise) is the fastest layout for tiled and recursive code, up to 2.7x faster than `row_wise` at n = 2048. Column-major only mirrors row-major.
 6. **Regimes:** this machine shows regimes (a) and (b) at every level; (c) on L1 is out of reach (n > 4096).
+7. **Transposition** confirms the same cache story at larger n (O(n²)): recursive is up to 6× faster than nested loops and has 5–10× fewer L2 misses.
+8. **Storing Bᵀ** beats `naive` but not `row_wise`; tiled-on-Bᵀ nearly matches ordinary `tiled`.
 
 ## 7. Limits and open questions
 
 - WSL2 counts only user-mode events, has no L3 or RAM counters, and its counts are noisy (30 runs needed for n ≤ 512).
-- Why the tile-wise layout wins was not measured: the counter run for the six newer versions was stopped (`results/2026-11-15-...`). Also open: `naive` at n = 256, and the slower tiled column-major version at n = 2048.
-- n = 4096 only partly measured; regime (c) not reached.
-- One machine, one thread, `double`, SSE2 only. Only medians are stored (no error bars). No Z-order layout. The professor's case b (row-major times column-major) is covered by `row_wise`, which has the same access pattern, not by storing B transposed.
+- **CPU-time limits of this machine (one Zen 2 core):** transpose `perf` stopped at n = 4096; `naive` multiply skipped at n = 2048 in the transposed-b session. Not algorithm gaps — wall time under O(n³) / `perf` on this laptop.
+- Why the tile-wise layout wins was not measured: the multi-layout multiply counter run was stopped (`results/2026-11-15-...-counters`). Also open: `naive` at n = 256, and the slower tiled column-major version at n = 2048.
+- n = 4096 multiply only partly measured; regime (c) not reached.
+- One machine, one thread, `double`, SSE2 only. Only medians are stored (no error bars). No Z-order layout.
 - The 2026-11-14 timings were taken before that code was committed (it is the code committed on 2026-11-15).
 
 ## 8. Reproduce
@@ -167,7 +228,8 @@ The same configuration measured twice in one session differs by 4.1% (median of 
 Build from the repository root as in the [main README](../../README.md). The program:
 
 ```bash
-./build/experiments/01-matrix-multiplication/matrix_multiplication <version> <n> [repetitions=7] [tile_size=32] [reference=naive|row_wise]
+./build/experiments/01-matrix-multiplication/matrix_multiplication <version> <n> [repetitions=7] [tile_size=32] [reference]
+# multiply reference: naive|row_wise; transpose reference: transpose_naive
 ```
 
 Measurements use the shared scripts ([scripts/README.md](../../scripts/README.md)) with the settings in [benchmark.conf](benchmark.conf), on Linux or WSL:
@@ -175,6 +237,7 @@ Measurements use the shared scripts ([scripts/README.md](../../scripts/README.md
 ```bash
 bash scripts/run.sh experiments/01-matrix-multiplication            # default checks
 bash scripts/run.sh experiments/01-matrix-multiplication tile_sweep oblivious
+bash scripts/run.sh experiments/01-matrix-multiplication transpose  # naive / tiled / oblivious A^T
 
 # the 2026-11-01 session (the other sub-folders are made the same way with --out .../large-n etc.)
 SIZES="250 256 400 500 512" COUNTER_SIZES="250 256 400 500 512" COUNTER_RUNS=30 NOVEC_SIZE=500 \
@@ -191,4 +254,4 @@ The exact commands of the 2026-11-14 sessions are in [notes/2026-11-14.txt](note
 .\.venv\Scripts\python.exe scripts/plot/make_figures.py experiments/01-matrix-multiplication/results/2026-11-01-ryzen5500u-wsl2
 ```
 
-**Dated notes** (lab notebook; statements there may have been corrected later, see [findings](../../docs/findings.md#corrected-since-october)): [2026-10-18](notes/2026-10-18.md) first measurements, [2026-11-01](notes/2026-11-01.md) the professor's cache questions and the second measurement, [2026-11-01-theory](notes/2026-11-01-theory.txt) first theory notes, [2026-11-14](notes/2026-11-14.txt) tile sizes, layouts and cache-oblivious, [2026-11-15](notes/2026-11-15.txt) figures and the stopped counter run.
+**Dated notes** (lab notebook; statements there may have been corrected later, see [findings](../../docs/findings.md#corrected-since-october)): [2026-10-18](notes/2026-10-18.md) first measurements, [2026-11-01](notes/2026-11-01.md) the professor's cache questions and the second measurement, [2026-11-01-theory](notes/2026-11-01-theory.txt) first theory notes, [2026-11-14](notes/2026-11-14.txt) tile sizes, layouts and cache-oblivious, [2026-11-15](notes/2026-11-15.txt) figures and the stopped counter run, [2026-11-15-transpose](notes/2026-11-15-transpose.md) transposition measurement.
