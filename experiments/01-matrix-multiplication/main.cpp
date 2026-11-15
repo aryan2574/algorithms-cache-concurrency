@@ -5,17 +5,17 @@
 //   - moving along a row   -> next element in memory (cache friendly)
 //   - moving down a column -> jump of n elements = n * 8 bytes (cache unfriendly)
 //
-// Three versions of the same multiplication (they differ only in memory access):
+// Nine versions of the same multiplication. They do the same arithmetic and differ only in
+// the order of the memory accesses and in how the matrices are stored:
+//                     row-major             column-major          tile-wise
+//   plain loops       naive, row_wise       col_wise              -
+//   cache-aware       tiled                 tiled_col_major       tiled_tile_wise
+//   cache-oblivious   oblivious_row_major   oblivious_col_major   oblivious_tile_wise
+//
 //   naive     textbook loops (i, j, k): inner loop walks DOWN a column of B
 //   row_wise  reordered loops (i, k, j): inner loop walks ALONG rows
 //   tiled     row_wise, done in small square tiles that fit in the CPU cache
-//
-// Added 2026-11-14: the same product on other storage layouts, with cache-aware and cache-oblivious
-// algorithms (see the comments above each function and 14-nov.txt):
-//                  row-major         column-major        tile-wise
-//   plain loops    row_wise          col_wise            -
-//   cache-aware    tiled             tiled_col_major     tiled_tile_wise
-//   cache-oblivious oblivious_row_major oblivious_col_major oblivious_tile_wise
+// The other layouts and the recursive (cache-oblivious) versions are explained above their functions.
 //
 // Usage: matrix_multiplication <version> <n> [repetitions] [tile_size] [reference]
 //   matrix_multiplication row_wise 512
@@ -94,7 +94,7 @@ void multiply_tiled(const Matrix& A, const Matrix& B, Matrix& C, int n, int tile
 }
 
 // ---------------------------------------------------------------------------------------------
-// Other storage layouts (added 2026-11-14). Same matrix, different order in memory:
+// Other storage layouts. Same matrix, different order in memory:
 //   row-major    element (r, c) at r * n + c               (everything above)
 //   column-major element (r, c) at c * n + r               (the mirror image)
 //   tile-wise    the matrix is cut into T x T tiles; each tile is stored as one contiguous block
