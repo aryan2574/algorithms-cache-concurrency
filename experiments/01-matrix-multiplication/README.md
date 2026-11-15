@@ -64,7 +64,7 @@ The model is the ideal cache: one cache of `Z` elements with lines of `L` elemen
 | any algorithm with `n³` multiply-adds | `≥ 2n³/(L√Z)` | lower bound (Hong and Kung 1981; tight constant: Smith et al., arXiv:1702.02017) |
 | any algorithm | `≥ 3n²/L` | read A and B once, write C once |
 
-**The lower bound** is a proof, not a measurement: no loop order can move fewer lines (Strassen-type algorithms can, because they do fewer multiplications). On L1 it is `n³/256`. `naive` is 256 times above it, `row_wise` 32 times, `tiled` with d = 32 two times. The cache-oblivious recursion meets the bound at every cache level without knowing `Z` (Frigo et al. 1999).
+**The lower bound** is a proof, not a measurement: no loop order can move fewer lines (Strassen-type algorithms can, because they do fewer multiplications). On L1 it is `n³/256`. `naive` is 256 times above it, `row_wise` 32 times, `tiled` with d = 32 two times. The cache-oblivious recursion matches this bound's order, `Θ(n³ / (L √Z))`, at every cache level without knowing `Z` (Frigo et al. 1999). The constant 2 in the table is the leading term of Smith et al.; the big-O of the recursive algorithm does not claim that constant.
 
 **The three regimes** have to be read per cache level, because L1, L2 and L3 have different `Z`:
 
@@ -153,7 +153,7 @@ Median time at n = 2048, best parameter of each version (ms):
 | column-major | 4856 | 2787 | 2588 |
 | tile-wise | - | 1884 | **1819** |
 
-- **Cache-oblivious is as fast as the tuned cache-aware version** on every layout (within 8% for n ≥ 512, about the noise), without choosing a tile size. Its own parameter (the block size where the recursion stops) still changes the time by up to 20%.
+- **Cache-oblivious is as fast as the tuned cache-aware version** on every layout (within 8% for n ≥ 512, about the noise) when each side uses its best parameter. That parameter for the recursion is the block size where it stops, not a cache size, and it still changes the time by about 20%. Held fixed at 32, it is 25% slower than the best row-major tile at n = 2048, so the cutoff is not free. The tile-wise recursion is only partly oblivious: the tile size is part of the layout.
 - The fastest version is the recursion on the tile-wise layout: 1819 ms at n = 2048 (9.4 GFLOPS, 2.7x faster than `row_wise`).
 - The layout matters for tiled code: at the same tile size the tile-wise layout needs 13-18% less time at n = 1024 and 25-32% less at n = 2048 (T = 32 to 256). Why was not measured (the counter run for these versions was stopped); conflict misses, TLB and prefetching are the likely reasons.
 - Column-major mirrors row-major for the plain loops (within 2% for n ≥ 1024). The tiled column-major version is up to 20% slower than the row-major one at n = 2048, for an unknown reason.
@@ -201,7 +201,9 @@ Counters (n = 1024…4096, parameter 16): recursive has **5–10×** fewer L2 mi
 
 \*Skipped: **CPU-time limit** — `naive` is O(n³); ~10 s median at n = 1024 on this Ryzen 5 5500U, about eight times more work at n = 2048, and the default reference check is also naive (`STOPPED.txt` in that results folder).
 
-Storing Bᵀ + ijk already beats `naive` a lot (contiguous k-streams). It still loses to `row_wise` (same idea, better loop / SIMD shape without changing layout). Tiling on Bᵀ nearly matches ordinary `tiled` at n = 2048 (~4% slower).
+Storing Bᵀ + ijk already beats `naive` a lot (contiguous k-streams). It still loses to `row_wise` (same idea, better loop / SIMD shape without changing layout). Tiling on Bᵀ nearly matches ordinary `tiled` at n = 2048 (~5% slower: 4470 ms against 4271 ms, both at T = 32).
+
+These absolute times are from a later session than §5.5 and sit higher (`row_wise` at n = 2048 is 8149 ms here and 4905 ms there). Compare versions inside this table. The ratio `row_wise` / `tiled` at n = 2048 is about 1.9 here and in the tile sweep.
 
 ## 6. Conclusions
 
