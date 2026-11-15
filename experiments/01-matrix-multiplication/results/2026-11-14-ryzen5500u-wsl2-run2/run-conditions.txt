@@ -1,0 +1,15 @@
+Run 2 of 2026-11-14 (repeat of the first tile sweep, plus layouts and cache-oblivious versions)
+
+Why: the first run (../2026-11-14-ryzen5500u-wsl2/) had noisy timings: Balanced power plan,
+Chrome and other programs open.
+
+Conditions of this run (written before the start):
+  Power source   AC (charger plugged in, Win32_Battery BatteryStatus = 2)
+  Power plan     High performance (created from the Windows template; the machine only had Balanced)
+  Programs       Chrome closed. Cursor stays open (needed to run this). The GitLens helper
+                 processes (gk.exe) of Cursor are running. Windows idle CPU load was 9% to 13%.
+  Command        TILE_SWEEP_NAIVE_REFERENCE_MAX=512 bash scripts/run.sh \
+                   experiments/01-matrix-multiplication environment tile_sweep oblivious \
+                   --out experiments/01-matrix-multiplication/results/2026-11-14-ryzen5500u-wsl2-run2
+  Reference      naive for n <= 512, row_wise for n >= 1024 (all checksums must be identical)
+  Git            nothing committed; environment.txt states if the working tree had changes
