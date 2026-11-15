@@ -1,4 +1,5 @@
-// Matrix multiplication experiment: C = A * B for square n x n matrices.
+// Matrix multiplication experiment: C = A * B for square n x n matrices, plus matrix
+// transposition B = A^T (the simpler cache-oblivious problem from Frigo et al.).
 //
 // Storage: one std::vector<double>, row by row ("row-major").
 // Element (row, col) is stored at index row * n + col.
@@ -17,15 +18,27 @@
 //   tiled     row_wise, done in small square tiles that fit in the CPU cache
 // The other layouts and the recursive (cache-oblivious) versions are explained above their functions.
 //
+// Three versions of out-of-place transposition (B[j,i] = A[i,j]), all row-major:
+//   transpose_naive       two nested loops (reads a row of A, writes a column of B)
+//   transpose_tiled       same copy, done in T x T tiles (cache-aware)
+//   transpose_oblivious   recursive split of the largest side until the block is small
+// Transposition is O(n^2), so it can be measured at sizes where multiplication is too slow.
+//
+// Multiplication with B stored transposed (professor case: row-major A × column-major B):
+//   transposed_b        loops i,j,k; both A and B^T walk contiguously in k
+//   tiled_transposed_b  the same, in T x T tiles (cache-aware)
+// B is converted with the out-of-place transpose outside the timed region.
+//
 // Usage: matrix_multiplication <version> <n> [repetitions] [tile_size] [reference]
 //   matrix_multiplication row_wise 512
 //   matrix_multiplication tiled 1024 5 32
 //   matrix_multiplication tiled 4096 3 64 row_wise
 //   matrix_multiplication oblivious_tile_wise 1024 5 32
+//   matrix_multiplication transpose_oblivious 8192 5 32
 //
 // reference: which version the result is checked against before timing.
-//   naive (default) is the textbook version; it takes minutes at n >= 2048.
-//   row_wise gives the same answer much faster, for large n.
+//   Multiplication: naive (default); it takes minutes at n >= 2048, so use row_wise there.
+//   Transposition:  transpose_naive (default and only choice; still cheap at large n).
 
 #include <algorithm>
 #include <chrono>
@@ -315,6 +328,107 @@ void multiply_oblivious_tile_wise(const Matrix& A, const Matrix& B, Matrix& C, i
     oblivious_tiles_recursive(A, B, C, tiles, tile, 0, 0, 0, tiles, tiles, tiles);
 }
 
+// --- Matrix transposition: B = A^T (out of place, both matrices row-major) ---
+// The naive loops read along a row of A (contiguous) and write down a column of B (stride n).
+// That write stream is the cache problem. Tiling and the recursive split keep a small block of
+// B contiguous in the working set so the writes hit the cache.
+
+void transpose_naive(const Matrix& A, Matrix& B, int n) {
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            B[static_cast<std::size_t>(j) * n + i] = A[static_cast<std::size_t>(i) * n + j];
+        }
+    }
+}
+
+void transpose_tiled(const Matrix& A, Matrix& B, int n, int tile) {
+    for (int ii = 0; ii < n; ii += tile) {
+        const int i_end = std::min(ii + tile, n);
+        for (int jj = 0; jj < n; jj += tile) {
+            const int j_end = std::min(jj + tile, n);
+            for (int i = ii; i < i_end; ++i) {
+                for (int j = jj; j < j_end; ++j) {
+                    B[static_cast<std::size_t>(j) * n + i] = A[static_cast<std::size_t>(i) * n + j];
+                }
+            }
+        }
+    }
+}
+
+// Transpose the mi x nj block of A (top-left at A) into the nj x mi block of B (top-left at B).
+// ld_a / ld_b are the leading dimensions of the full matrices. Recurse on the longer side until
+// both sides are at most `base`, then copy with plain loops.
+void transpose_oblivious_recursive(const double* A, double* B, int ld_a, int ld_b,
+                                   int mi, int nj, int base) {
+    if (mi <= base && nj <= base) {
+        for (int i = 0; i < mi; ++i) {
+            for (int j = 0; j < nj; ++j) {
+                B[static_cast<std::size_t>(j) * ld_b + i] = A[static_cast<std::size_t>(i) * ld_a + j];
+            }
+        }
+        return;
+    }
+    if (mi >= nj) {
+        const int half = mi / 2;
+        transpose_oblivious_recursive(A, B, ld_a, ld_b, half, nj, base);
+        transpose_oblivious_recursive(A + static_cast<std::size_t>(half) * ld_a, B + half,
+                                      ld_a, ld_b, mi - half, nj, base);
+    } else {
+        const int half = nj / 2;
+        transpose_oblivious_recursive(A, B, ld_a, ld_b, mi, half, base);
+        transpose_oblivious_recursive(A + half, B + static_cast<std::size_t>(half) * ld_b,
+                                      ld_a, ld_b, mi, nj - half, base);
+    }
+}
+
+void transpose_oblivious(const Matrix& A, Matrix& B, int n, int base) {
+    transpose_oblivious_recursive(A.data(), B.data(), n, n, n, n, base);
+}
+
+// --- Multiplication with B stored as B^T (row-major A, transposed B) ---
+// BT holds B^T in row-major, so BT[j * n + k] = B[k, j]. The textbook loops i,j,k then walk
+// both A and BT contiguously in k (professor case "row-major times col-major"). This is the
+// same arithmetic traffic as row_wise, but with the classic loop order and an explicit transpose
+// of B (done outside the timed region). tiled_transposed_b adds cache-aware tiling on top.
+
+void multiply_transposed_b(const Matrix& A, const Matrix& BT, Matrix& C, int n) {
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            double sum = 0.0;
+            for (int k = 0; k < n; ++k) {
+                sum += A[static_cast<std::size_t>(i) * n + k] *
+                       BT[static_cast<std::size_t>(j) * n + k];
+            }
+            C[static_cast<std::size_t>(i) * n + j] = sum;
+        }
+    }
+}
+
+void multiply_tiled_transposed_b(const Matrix& A, const Matrix& BT, Matrix& C, int n, int tile) {
+    std::fill(C.begin(), C.end(), 0.0);
+
+    for (int ii = 0; ii < n; ii += tile) {
+        const int i_end = std::min(ii + tile, n);
+        for (int jj = 0; jj < n; jj += tile) {
+            const int j_end = std::min(jj + tile, n);
+            for (int kk = 0; kk < n; kk += tile) {
+                const int k_end = std::min(kk + tile, n);
+
+                for (int i = ii; i < i_end; ++i) {
+                    for (int j = jj; j < j_end; ++j) {
+                        double sum = C[static_cast<std::size_t>(i) * n + j];
+                        for (int k = kk; k < k_end; ++k) {
+                            sum += A[static_cast<std::size_t>(i) * n + k] *
+                                   BT[static_cast<std::size_t>(j) * n + k];
+                        }
+                        C[static_cast<std::size_t>(i) * n + j] = sum;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Run `work` once to warm up, then `repetitions` times. Returns the median in ms.
 template <typename Work>
 double median_ms(Work work, int repetitions) {
@@ -337,35 +451,32 @@ int main(int argc, char* argv[]) {
     const int n = argc > 2 ? std::atoi(argv[2]) : 0;
     const int repetitions = argc > 3 ? std::atoi(argv[3]) : 7;
     const int tile_size = argc > 4 ? std::atoi(argv[4]) : 32;
-    const std::string reference_name = argc > 5 ? argv[5] : "naive";
+    const bool is_transpose = algorithm.rfind("transpose_", 0) == 0;
+    const std::string reference_name =
+        argc > 5 ? argv[5] : (is_transpose ? "transpose_naive" : "naive");
 
-    const bool known = algorithm == "naive" || algorithm == "row_wise" || algorithm == "tiled" ||
-                       algorithm == "col_wise" || algorithm == "tiled_col_major" ||
-                       algorithm == "tiled_tile_wise" ||
-                       algorithm == "oblivious_row_major" || algorithm == "oblivious_col_major" ||
-                       algorithm == "oblivious_tile_wise";
-    const bool known_reference = reference_name == "naive" || reference_name == "row_wise";
-    if (!known || !known_reference || n < 1 || repetitions < 1 || tile_size < 1) {
+    const bool known_multiply =
+        algorithm == "naive" || algorithm == "row_wise" || algorithm == "tiled" ||
+        algorithm == "col_wise" || algorithm == "tiled_col_major" ||
+        algorithm == "tiled_tile_wise" || algorithm == "oblivious_row_major" ||
+        algorithm == "oblivious_col_major" || algorithm == "oblivious_tile_wise" ||
+        algorithm == "transposed_b" || algorithm == "tiled_transposed_b";
+    const bool known_transpose = algorithm == "transpose_naive" || algorithm == "transpose_tiled" ||
+                                 algorithm == "transpose_oblivious";
+    const bool known_reference =
+        is_transpose ? (reference_name == "transpose_naive")
+                     : (reference_name == "naive" || reference_name == "row_wise");
+    if ((!known_multiply && !known_transpose) || !known_reference || n < 1 || repetitions < 1 ||
+        tile_size < 1) {
         std::cerr << "Usage: " << argv[0] << " <version> <n> [repetitions=7] [tile_size=32]"
-                  << " [reference=naive|row_wise]\n"
-                  << "  version: naive row_wise tiled col_wise tiled_col_major tiled_tile_wise\n"
-                  << "           oblivious_row_major oblivious_col_major oblivious_tile_wise\n"
-                  << "  tile_size: tile for the tiled* versions and oblivious_tile_wise;\n"
-                  << "             smallest block of the recursion for oblivious_row_major/col_major\n";
-        return 1;
-    }
-
-    // Which storage layout the version uses.
-    enum class Layout { RowMajor, ColMajor, TileWise };
-    const Layout layout = (algorithm == "col_wise" || algorithm == "tiled_col_major" ||
-                           algorithm == "oblivious_col_major")
-                              ? Layout::ColMajor
-                          : (algorithm == "tiled_tile_wise" || algorithm == "oblivious_tile_wise")
-                              ? Layout::TileWise
-                              : Layout::RowMajor;
-    if (layout == Layout::TileWise && n % tile_size != 0) {
-        std::cerr << algorithm << " needs n to be a multiple of the tile size (n=" << n
-                  << ", tile_size=" << tile_size << ")\n";
+                  << " [reference]\n"
+                  << "  multiply:  naive row_wise tiled col_wise tiled_col_major tiled_tile_wise\n"
+                  << "             oblivious_row_major oblivious_col_major oblivious_tile_wise\n"
+                  << "             transposed_b tiled_transposed_b\n"
+                  << "             reference = naive|row_wise (default naive)\n"
+                  << "  transpose: transpose_naive transpose_tiled transpose_oblivious\n"
+                  << "             reference = transpose_naive (default)\n"
+                  << "  tile_size: tile / recursion base for tiled* and oblivious* versions\n";
         return 1;
     }
 
@@ -375,10 +486,60 @@ int main(int argc, char* argv[]) {
     std::uniform_real_distribution<double> random_value(-1.0, 1.0);
     Matrix A(size), B(size), C(size), reference(size);
     for (double& x : A) x = random_value(rng);
+
+    if (is_transpose) {
+        // B holds A^T. Only A is filled; B starts unused and is written by the transpose.
+        auto transpose = [&]() {
+            if (algorithm == "transpose_naive") transpose_naive(A, B, n);
+            else if (algorithm == "transpose_tiled") transpose_tiled(A, B, n, tile_size);
+            else transpose_oblivious(A, B, n, tile_size);
+        };
+
+        transpose_naive(A, reference, n);
+        transpose();
+        for (std::size_t x = 0; x < size; ++x) {
+            if (std::abs(B[x] - reference[x]) > 1e-9) {
+                std::cerr << "Wrong result for " << algorithm << " at index " << x << "\n";
+                return 1;
+            }
+        }
+
+        const double ms = median_ms(transpose, repetitions);
+        // Sixth CSV column is still named gflops for the shared scripts; for transpose it is
+        // million elements copied per second (n^2 copies, no floating-point arithmetic).
+        const double melems_per_s = static_cast<double>(n) * n / (ms * 1e3);
+        const double checksum = std::accumulate(B.begin(), B.end(), 0.0);
+        const bool uses_tile_size = algorithm != "transpose_naive";
+
+        std::cout << "n,algorithm,tile_size,repetitions,median_ms,gflops,checksum\n"
+                  << std::fixed << std::setprecision(6) << n << ',' << algorithm << ','
+                  << (uses_tile_size ? tile_size : 0) << ',' << repetitions << ',' << ms << ','
+                  << melems_per_s << ',' << checksum << '\n';
+        return 0;
+    }
+
+    // --- Multiplication path ---
     for (double& x : B) x = random_value(rng);
+
+    // Which storage layout the version uses.
+    enum class Layout { RowMajor, ColMajor, TileWise, BTransposed };
+    const Layout layout = (algorithm == "col_wise" || algorithm == "tiled_col_major" ||
+                           algorithm == "oblivious_col_major")
+                              ? Layout::ColMajor
+                          : (algorithm == "tiled_tile_wise" || algorithm == "oblivious_tile_wise")
+                              ? Layout::TileWise
+                          : (algorithm == "transposed_b" || algorithm == "tiled_transposed_b")
+                              ? Layout::BTransposed
+                              : Layout::RowMajor;
+    if (layout == Layout::TileWise && n % tile_size != 0) {
+        std::cerr << algorithm << " needs n to be a multiple of the tile size (n=" << n
+                  << ", tile_size=" << tile_size << ")\n";
+        return 1;
+    }
 
     // Versions with another layout work on converted copies (LA, LB, LC); the conversion is
     // outside the timed region. Row-major versions work on A, B, C directly.
+    // BTransposed: only B is replaced by B^T (row-major of the transpose = column-major of B).
     Matrix LA, LB, LC;
     if (layout == Layout::ColMajor) {
         LA = to_col_major(A, n);
@@ -388,6 +549,8 @@ int main(int argc, char* argv[]) {
         LA = to_tile_wise(A, n, tile_size);
         LB = to_tile_wise(B, n, tile_size);
         LC.assign(size, 0.0);
+    } else if (layout == Layout::BTransposed) {
+        LB = to_col_major(B, n);  // B^T in row-major order
     }
 
     auto multiply = [&]() {
@@ -399,7 +562,9 @@ int main(int argc, char* argv[]) {
         else if (algorithm == "tiled_tile_wise") multiply_tiled_tile_wise(LA, LB, LC, n, tile_size);
         else if (algorithm == "oblivious_row_major") multiply_oblivious<false>(A, B, C, n, tile_size);
         else if (algorithm == "oblivious_col_major") multiply_oblivious<true>(LA, LB, LC, n, tile_size);
-        else multiply_oblivious_tile_wise(LA, LB, LC, n, tile_size);
+        else if (algorithm == "oblivious_tile_wise") multiply_oblivious_tile_wise(LA, LB, LC, n, tile_size);
+        else if (algorithm == "transposed_b") multiply_transposed_b(A, LB, C, n);
+        else multiply_tiled_transposed_b(A, LB, C, n, tile_size);
     };
 
     // Check the answer against the reference version before timing anything.
@@ -422,7 +587,8 @@ int main(int argc, char* argv[]) {
 
     // tile_size is reported for the versions that use it, 0 for the others.
     const bool uses_tile_size =
-        algorithm != "naive" && algorithm != "row_wise" && algorithm != "col_wise";
+        algorithm != "naive" && algorithm != "row_wise" && algorithm != "col_wise" &&
+        algorithm != "transposed_b";
 
     std::cout << "n,algorithm,tile_size,repetitions,median_ms,gflops,checksum\n"
               << std::fixed << std::setprecision(6)
