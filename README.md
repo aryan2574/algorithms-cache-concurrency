@@ -20,7 +20,7 @@ docs/
 └── 01-matrix-multiplication/ # generated figures and diagrams
 experiments/
 ├── 01-matrix-multiplication/ # report, code, benchmark.conf, notes/, results/
-└── 02-merge-sort/            # next experiment (skeleton)
+└── 02-merge-sort/            # recursive vs iterative mergesort
 scripts/                      # shared measurement + figure tooling
 ```
 
@@ -31,8 +31,8 @@ scripts/                      # shared measurement + figure tooling
 
 | # | Experiment | Status | Report |
 |---|---|---|---|
-| 01 | Matrix multiplication | done | [README](experiments/01-matrix-multiplication/README.md) · [findings](docs/findings.md) |
-| 02 | Merge sort | not started | [README](experiments/02-merge-sort/README.md) |
+| 01 | Matrix multiplication (+ transpose) | done | [README](experiments/01-matrix-multiplication/README.md) · [findings](docs/findings.md) |
+| 02 | Merge sort (recursive vs iterative) | done | [README](experiments/02-merge-sort/README.md) · [findings](docs/findings.md) |
 
 ## Build and run
 
@@ -42,6 +42,7 @@ Requirements: Git, CMake ≥ 3.20, a C++20 compiler (GCC / Clang / MSVC). On Ubu
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ./build/experiments/01-matrix-multiplication/matrix_multiplication row_wise 512
+./build/experiments/02-merge-sort/merge_sort recursive 65536
 ```
 
 On Visual Studio (multi-config): `cmake -S . -B build` then `cmake --build build --config Release --parallel`. Use a Release build for timings (Debug is ~35× slower here).
@@ -50,7 +51,8 @@ Measure on Linux / WSL with the shared scripts ([scripts/README.md](scripts/READ
 
 ```bash
 bash scripts/run.sh experiments/01-matrix-multiplication            # default checks
-bash scripts/run.sh experiments/01-matrix-multiplication --list
+bash scripts/run.sh experiments/02-merge-sort environment timings cache_counters
+bash scripts/run.sh --list
 ```
 
 Figures from a results folder ([scripts/plot/README.md](scripts/plot/README.md)):
@@ -59,6 +61,7 @@ Figures from a results folder ([scripts/plot/README.md](scripts/plot/README.md))
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r scripts/plot/requirements.txt
 .\.venv\Scripts\python.exe scripts/plot/make_figures.py experiments/01-matrix-multiplication/results/2026-11-14-ryzen5500u-wsl2-run2
+.\.venv\Scripts\python.exe scripts/plot/make_figures.py experiments/02-merge-sort/results/<session>
 ```
 
 ## Add an experiment

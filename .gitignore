@@ -77,5 +77,6 @@ Testing/
 # Python (plotting scripts): virtual environment and caches. Generated figures live under
 # docs/<experiment>/figures/ and are committed.
 .venv/
+.venv-wsl/
 __pycache__/
 *.pyc

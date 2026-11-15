@@ -20,6 +20,10 @@ Half a page per experiment. Full tables, figures and method: the experiment's ow
 
 **Limits.** WSL2: noisy counters, no L3/DRAM events. Why tile-wise wins stays a hypothesis (counter run stopped). One machine, one thread, `double`, medians only. Differences under ~10% unreliable.
 
+**Transposition** (`…-transpose/`, counters `…-transpose-counters/`). Out-of-place `B = Aᵀ`. Recursive (base 16) is **3.1–6.0×** faster than nested loops; **5–10×** fewer L2 misses (perf `cache-misses` on Zen 2). L1 *rate* alone is misleading; absolute L2 misses match the timings. Counters stop at n = 4096 (**CPU-time limit** of this laptop under `perf`; n = 8192 timings exist). Figures: `transpose_vs_n`, `transpose_cache_misses`.
+
+**Multiply with B transposed** (`…-transposed-b/`). Versions `transposed_b` / `tiled_transposed_b` (A row-major, B stored as Bᵀ, loops ijk ± tiling) — professor case b literally. Beats `naive` a lot; loses to `row_wise` / `tiled` (same traffic idea, better loop shape). At n = 2048 tiled-on-Bᵀ is within ~4% of `tiled`. `naive` at n = 2048 skipped: **CPU-time limit** (O(n³) on Ryzen 5 5500U). Figure: `transposed_b_vs_row_wise`.
+
 ### Corrected since October
 
 | Old claim | Correction |
@@ -35,4 +39,7 @@ Half a page per experiment. Full tables, figures and method: the experiment's ow
 
 ## 02 — Merge sort
 
-Not started. Placeholder: [experiments/02-merge-sort/README.md](../experiments/02-merge-sort/README.md).
+**Complete** (two sessions, 2026-11-15, Ryzen 5 5500U / WSL2). Report: [experiments/02-merge-sort/README.md](../experiments/02-merge-sort/README.md).
+
+Recursive vs iterative, same `merge`, `int64`, powers of two. **Iterative slightly faster while data fits in L3**; **recursive faster past L3** (~**1.10–1.22×**, both runs). L2 misses **~2.5–5×** higher for iterative at `n ≥ 2¹⁸` (small-n counters noisy under WSL2). Theory: recursive \(O((n/L)\log_2(n/Z))\), iterative \(\Theta((n/L)\log n)\); Aggarwal–Vitter lower bound needs funnelsort. Figures: `docs/02-merge-sort/figures/2026-11-15-ryzen5500u-wsl2-run2/`.
+
