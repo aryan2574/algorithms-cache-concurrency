@@ -1,6 +1,6 @@
 # Experiment 02: Merge sort and the cache
 
-**Status:** **complete** (tasks 5–10). Measured twice on 2026-11-15 (Ryzen 5 5500U / WSL2). Agenda: [docs/agenda.md](../../docs/agenda.md). Findings: [docs/findings.md](../../docs/findings.md). Shared cache theory: [docs/theory/caches.md](../../docs/theory/caches.md).
+**Status:** **complete** - Measured twice on 2026-11-15 (Ryzen 5 5500U / WSL2). Agenda: [docs/agenda.md](../../docs/agenda.md). Findings: [docs/findings.md](../../docs/findings.md). Shared cache theory: [docs/theory/caches.md](../../docs/theory/caches.md).
 
 ## 1. Question
 
@@ -15,9 +15,9 @@ The iterative version has no recursion overhead, but every outer pass walks the 
 
 Both in [`main.cpp`](main.cpp). Same `merge`, same temporary buffer of length `n`, same random `int64` input (fixed seed). Each run checks its result against a reference version before timing.
 
-| Version | Idea |
-| --- | --- |
-| `recursive` | classic top-down: recurse on `[lo, mid)` and `[mid, hi)`, then `merge` |
+| Version     | Idea                                                                    |
+| ----------- | ----------------------------------------------------------------------- |
+| `recursive` | classic top-down: recurse on `[lo, mid)` and `[mid, hi)`, then `merge`  |
 | `iterative` | bottom-up: `for width = 1, 2, 4, …` merge adjacent blocks of that width |
 
 `n` should be a power of 2 (as in the professor's unrolling). The program still accepts other lengths.
@@ -35,23 +35,23 @@ Ideal cache: `Z` words, line size `L` words; `Q` = lines transferred. Elements a
 When a subproblem of size `m` fits in cache (`2m ≲ Z`), sorting it costs about one cold load of those words, then the remaining merges hit. The largest such subproblem has `m ≈ Z/2`, so the levels that do **not** fit number about `log₂(2n/Z)`. Each such level scans `Θ(n)` words → classic recursive binary-mergesort bound (Frigo et al. / Brodal surveys):
 
 \[
-Q_{\mathrm{rec}} = O\Bigl(\frac{n}{L}\bigl(1 + \log_{2}\frac{n}{Z}\bigr)\Bigr).
+Q*{\mathrm{rec}} = O\Bigl(\frac{n}{L}\bigl(1 + \log*{2}\frac{n}{Z}\bigr)\Bigr).
 \]
 
 Compared with the iterative bound below, the ratio of the leading terms is
 
 \[
-\frac{Q_{\mathrm{iter}}}{Q_{\mathrm{rec}}} \approx \frac{\log_2 n}{\log_2(2n/Z)}
+\frac{Q*{\mathrm{iter}}}{Q*{\mathrm{rec}}} \approx \frac{\log_2 n}{\log_2(2n/Z)}
 \]
 
-when \(n > Z\). That ratio is **not** \(\log_2 Z\). \(\log_2 Z\) is only the difference of the two logarithms, so the iterative version moves about \((n/L)\log_2 Z\) *extra* lines; the factor between the two counts falls back toward 1 for very large \(n\). On this L2 (\(Z = 2^{16}\) elements) at \(n = 2^{22}\) the ideal-cache ratio is \(22/7 \approx 3.1\). The recursive bound is still a factor \(\Theta(\log(Z/L))\) above the Aggarwal–Vitter sorting lower bound (funnelsort closes that gap).
+when \(n > Z\). That ratio is **not** \(\log_2 Z\). \(\log_2 Z\) is only the difference of the two logarithms, so the iterative version moves about \((n/L)\log_2 Z\) _extra_ lines; the factor between the two counts falls back toward 1 for very large \(n\). On this L2 (\(Z = 2^{16}\) elements) at \(n = 2^{22}\) the ideal-cache ratio is \(22/7 \approx 3.1\). The recursive bound is still a factor \(\Theta(\log(Z/L))\) above the Aggarwal–Vitter sorting lower bound (funnelsort closes that gap).
 
 ### Iterative (bottom-up) mergesort
 
 There are `log₂ n` passes. If `n ≫ Z`, each pass reads/writes the whole array (and temp) with little reuse from the previous pass:
 
 \[
-Q_{\mathrm{iter}} = \Theta\Bigl(\frac{n}{L}\log n\Bigr).
+Q\_{\mathrm{iter}} = \Theta\Bigl(\frac{n}{L}\log n\Bigr).
 \]
 
 Same leading `n/L`. The measured L2-miss ratio at \(n = 2^{22}\) is about 2.6–2.8 (both sessions), close to the ideal-cache 3.1: the timed run also copies the input back, the early passes are not all equally cold, and `perf` does not count L2 prefetches.
@@ -60,31 +60,31 @@ Same leading `n/L`. The measured L2-miss ratio at \(n = 2^{22}\) is about 2.6–
 
 Working set = array + temp = `16n` bytes. A level is crossed when that working set passes the cache (`n = cache_bytes / 16`): L1 at \(n = 2^{11}\) (2048), L2 at \(n = 2^{15}\) (32768), L3 at \(n = 2^{18}\) (262144).
 
-| Regime | `n` | Expectation |
-| --- | --- | --- |
-| fits in L1 (`16n ≤ 32 KiB`) | `n ≤ 2¹¹` | both similar; recursive call overhead may lose |
-| past L1, fits in L2 | `2¹² … 2¹⁴` | still mostly inside the noise |
-| past L2, fits in L3 | `2¹⁶ … 2¹⁷` | iterative can still win: the whole array is reloaded, but from L3 |
-| at / past L3 | `n ≥ 2¹⁸` | recursive should show the clearest advantage |
+| Regime                      | `n`         | Expectation                                                       |
+| --------------------------- | ----------- | ----------------------------------------------------------------- |
+| fits in L1 (`16n ≤ 32 KiB`) | `n ≤ 2¹¹`   | both similar; recursive call overhead may lose                    |
+| past L1, fits in L2         | `2¹² … 2¹⁴` | still mostly inside the noise                                     |
+| past L2, fits in L3         | `2¹⁶ … 2¹⁷` | iterative can still win: the whole array is reloaded, but from L3 |
+| at / past L3                | `n ≥ 2¹⁸`   | recursive should show the clearest advantage                      |
 
 ### Lower bounds for sorting (literature, task 10)
 
 In the **I/O model** of Aggarwal & Vitter (1988), comparison-based sorting needs
 
 \[
-\Theta\Bigl(\frac{N}{B}\log_{M/B}\frac{N}{B}\Bigr)
+\Theta\Bigl(\frac{N}{B}\log\_{M/B}\frac{N}{B}\Bigr)
 \]
 
 block transfers (`M` = memory words, `B` = block / line words). That is also a lower bound for the **ideal-cache / cache-oblivious** model of Frigo, Leiserson, Prokop & Ramachandran (1999), because any cache-oblivious algorithm can be read as an I/O algorithm for every `M`, `B`.
 
-| Algorithm | Cache / I/O cost | Notes |
-| --- | --- | --- |
-| Recursive binary mergesort | \(O\bigl(\frac{N}{B}\bigl(1+\log_{2}\frac{N}{M}\bigr)\bigr)\) | cache-oblivious; factor \(\Theta(\log(M/B))\) above the lower bound |
-| Bottom-up (iterative) mergesort | \(\Theta\bigl(\frac{N}{B}\log_{2} N\bigr)\) when \(N \gg M\) | no \(M\) in the log; worst of the three for large \(N\) |
-| Funnelsort (Frigo et al.) | \(O\bigl(\frac{N}{B}\log_{M/B}\frac{N}{B}\bigr)\) | matches the lower bound under the **tall-cache** assumption \(M=\Omega(B^{2})\) |
-| Lower bound (any comparison sort) | \(\Omega\bigl(\frac{N}{B}\log_{M/B}\frac{N}{B}\bigr)\) | Aggarwal–Vitter; Brodal & Fagerberg: optimal cache-oblivious sorting needs a tall-cache assumption |
+| Algorithm                         | Cache / I/O cost                                               | Notes                                                                                              |
+| --------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Recursive binary mergesort        | \(O\bigl(\frac{N}{B}\bigl(1+\log\_{2}\frac{N}{M}\bigr)\bigr)\) | cache-oblivious; factor \(\Theta(\log(M/B))\) above the lower bound                                |
+| Bottom-up (iterative) mergesort   | \(\Theta\bigl(\frac{N}{B}\log\_{2} N\bigr)\) when \(N \gg M\)  | no \(M\) in the log; worst of the three for large \(N\)                                            |
+| Funnelsort (Frigo et al.)         | \(O\bigl(\frac{N}{B}\log\_{M/B}\frac{N}{B}\bigr)\)             | matches the lower bound under the **tall-cache** assumption \(M=\Omega(B^{2})\)                    |
+| Lower bound (any comparison sort) | \(\Omega\bigl(\frac{N}{B}\log\_{M/B}\frac{N}{B}\bigr)\)        | Aggarwal–Vitter; Brodal & Fagerberg: optimal cache-oblivious sorting needs a tall-cache assumption |
 
-**Empirical precedent:** LaMarca & Ladner (*The Influence of Caches on the Performance of Sorting*, 1999) already showed that restructuring mergesort / quicksort / heapsort for cache locality changes wall-clock time a lot; our recursive-vs-iterative comparison is the same phenomenon on modern hardware with `perf` counters.
+**Empirical precedent:** LaMarca & Ladner (_The Influence of Caches on the Performance of Sorting_, 1999) already showed that restructuring mergesort / quicksort / heapsort for cache locality changes wall-clock time a lot; our recursive-vs-iterative comparison is the same phenomenon on modern hardware with `perf` counters.
 
 Our experiment implements classic binary mergesort only (not funnelsort). Theory predicts an L2-miss ratio near \(\log_2 n / \log_2(2n/Z)\) (about 3.1 at \(n = 2^{22}\) on this L2), not a factor \(\log_2 Z\), and it does **not** say that recursive binary mergesort is I/O-optimal — funnelsort would be needed for that.
 
@@ -95,10 +95,10 @@ Our experiment implements classic binary mergesort only (not funnelsort). Theory
 - **Timing:** one warm-up, then median of `REPS` (or `REPS_LARGE` for large `n`). Each repetition restores the unsorted input (copy included in the timed region — same for both versions).
 - **Counters:** `perf` as in experiment 01; on Zen 2 `cache-misses` = **L2** misses.
 
-| Check | Output |
-| --- | --- |
-| `environment` | `environment.txt` |
-| `timings` | `timings.csv` |
+| Check            | Output               |
+| ---------------- | -------------------- |
+| `environment`    | `environment.txt`    |
+| `timings`        | `timings.csv`        |
 | `cache_counters` | `cache-counters.csv` |
 
 ## 5. Results
@@ -111,15 +111,15 @@ Two sessions (same machine, same code): [`…-wsl2/`](results/2026-11-15-ryzen55
 
 ![iterative / recursive time ratio](../../docs/02-merge-sort/figures/2026-11-15-ryzen5500u-wsl2-run2/ratio_vs_n.png)
 
-| n | recursive (ms) | iterative (ms) | ratio it/rec (run2) | ratio (run1) |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 024 | 0.029 | 0.029 | 0.99 | 0.83 |
-| 4 096 | 0.209 | 0.200 | 0.96 | 0.95 |
-| 16 384 | 1.05 | 0.93 | 0.88 | 0.92 |
-| 65 536 | 4.64 | 4.37 | 0.94 | 0.93 |
-| 262 144 | 23.4 | 28.6 | **1.22** | **1.17** |
-| 1 048 576 | 115 | 127 | **1.10** | **1.15** |
-| 4 194 304 | 536 | 637 | **1.19** | **1.20** |
+|         n | recursive (ms) | iterative (ms) | ratio it/rec (run2) | ratio (run1) |
+| --------: | -------------: | -------------: | ------------------: | -----------: |
+|     1 024 |          0.029 |          0.029 |                0.99 |         0.83 |
+|     4 096 |          0.209 |          0.200 |                0.96 |         0.95 |
+|    16 384 |           1.05 |           0.93 |                0.88 |         0.92 |
+|    65 536 |           4.64 |           4.37 |                0.94 |         0.93 |
+|   262 144 |           23.4 |           28.6 |            **1.22** |     **1.17** |
+| 1 048 576 |            115 |            127 |            **1.10** |     **1.15** |
+| 4 194 304 |            536 |            637 |            **1.19** |     **1.20** |
 
 ![throughput vs n](../../docs/02-merge-sort/figures/2026-11-15-ryzen5500u-wsl2-run2/throughput_vs_n.png)
 
@@ -132,17 +132,17 @@ Two sessions (same machine, same code): [`…-wsl2/`](results/2026-11-15-ryzen55
 
 ![L2 misses per element](../../docs/02-merge-sort/figures/2026-11-15-ryzen5500u-wsl2-run2/misses_per_element.png)
 
-| n | L2 misses rec | L2 misses it | L2 ratio (run2) | L2 ratio (run1) | L1 miss % rec | L1 miss % it |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 65 536 | 24.0 k | 22.2 k | 0.93* | **2.76×** | 2.6 | 5.6 |
-| 262 144 | 55.5 k | 270 k | **4.87×** | **2.35×** | 3.0 | 5.9 |
-| 1 048 576 | 202 k | 785 k | **3.89×** | **2.41×** | 3.4 | 5.9 |
-| 4 194 304 | 1.34 M | 3.71 M | **2.77×** | **2.64×** | 3.8 | 6.2 |
+|         n | L2 misses rec | L2 misses it | L2 ratio (run2) | L2 ratio (run1) | L1 miss % rec | L1 miss % it |
+| --------: | ------------: | -----------: | --------------: | --------------: | ------------: | -----------: |
+|    65 536 |        24.0 k |       22.2 k |          0.93\* |       **2.76×** |           2.6 |          5.6 |
+|   262 144 |        55.5 k |        270 k |       **4.87×** |       **2.35×** |           3.0 |          5.9 |
+| 1 048 576 |         202 k |        785 k |       **3.89×** |       **2.41×** |           3.4 |          5.9 |
+| 4 194 304 |        1.34 M |       3.71 M |       **2.77×** |       **2.64×** |           3.8 |          6.2 |
 
-\*At `n = 65 536`, WSL2 `perf` counts are noisy (run1 and run2 disagree); L1 miss *rate* still favours recursive. From `n ≥ 262 144` both sessions agree: iterative has **~2.4–4.9× more L2 misses**. At \(n = 2^{22}\) that is 2.64× and 2.77×, against the ideal-cache prediction of about 3.1 on L2 (§3).
+\*At `n = 65 536`, WSL2 `perf` counts are noisy (run1 and run2 disagree); L1 miss _rate_ still favours recursive. From `n ≥ 262 144` both sessions agree: iterative has **~2.4–4.9× more L2 misses**. At \(n = 2^{22}\) that is 2.64× and 2.77×, against the ideal-cache prediction of about 3.1 on L2 (§3).
 
 - L2 misses per element stay lower for recursive; iterative climbs — the full-array-pass story.
-- L1 *loads* per element are a bit higher for recursive (call / stack traffic); the timing win tracks **L2 misses**, not raw L1 load count.
+- L1 _loads_ per element are a bit higher for recursive (call / stack traffic); the timing win tracks **L2 misses**, not raw L1 load count.
 
 ![L1 loads per element](../../docs/02-merge-sort/figures/2026-11-15-ryzen5500u-wsl2-run2/l1_loads.png)
 
