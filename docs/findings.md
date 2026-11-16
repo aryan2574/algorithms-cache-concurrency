@@ -1,0 +1,45 @@
+# Findings
+
+Half a page per experiment. Full tables, figures and method: the experiment's own README. Agenda and professor tasks: [agenda.md](agenda.md).
+
+---
+
+## 01 — Matrix multiplication
+
+**Report:** [experiments/01-matrix-multiplication/README.md](../experiments/01-matrix-multiplication/README.md) · **Theory:** [theory/caches.md](theory/caches.md) · **Data:** `results/2026-10-18-…`, `2026-11-01-…`, `2026-11-14-…-run2/`
+
+**Question.** How much does column-wise vs row-wise access cost in `C = A * B`, and can tiling (cache-aware) and recursion (cache-oblivious) fix it when the data leaves the cache? Three storage layouts: row-major, column-major, tile-wise.
+
+**Results.**
+
+- **Access order.** `row_wise` is 2.4–3.4× faster than `naive` at ordinary sizes, and **9–24×** at powers of two (n = 256 / 512 / 1024) because a whole column of B then maps to 1–2 L1 sets. Without SIMD at n = 500 the gap is still **2.3×**; vectorisation adds about 1.2×.
+- **Counters match the formulas.** `row_wise` L1 misses = `n³/8` within 1–7%. `naive` ≈ `n³` once the column does not fit or collides. On this CPU `perf` `cache-misses` counts **L2** misses, not last-level.
+- **Tiling.** No gain up to n = 512. From ~n = 600 (B leaves usable L3) `tiled` is **1.3–2.4×** faster than `row_wise`. Best tile at n = 1024 / 2048 is **T = 128** (U-shaped curve); T = 4 is up to 5.3× *slower* than no tiling. A tile larger than L3 (T = 512) can be worse than plain loops on row-major.
+- **Layouts and oblivious.** Cache-oblivious matches tuned cache-aware within ~7% (noise) on every layout, with no tile size to choose. Fastest at n = 2048: **oblivious + tile-wise**, 1819 ms vs 4905 ms for `row_wise` (**2.7×**). Column-major mirrors row-major for plain loops (within 2%).
+- **Regimes.** (a) and (b) shown at every cache level. (c) "cache < single row" on L1 needs n > 4096 — only partly measured at n = 4096; expected extra slowdown of `row_wise` **not** seen.
+
+**Limits.** WSL2: noisy counters, no L3/DRAM events. Why tile-wise wins stays a hypothesis (counter run stopped). One machine, one thread, `double`, medians only. Differences under ~10% unreliable.
+
+**Transposition** (`…-transpose/`, counters `…-transpose-counters/`). Out-of-place `B = Aᵀ`. Recursive (base 16) is **3.1–6.0×** faster than nested loops; **5–10×** fewer L2 misses (perf `cache-misses` on Zen 2). L1 *rate* alone is misleading; absolute L2 misses match the timings. Counters stop at n = 4096 (**CPU-time limit** of this laptop under `perf`; n = 8192 timings exist). Figures: `transpose_vs_n`, `transpose_cache_misses`.
+
+**Multiply with B transposed** (`…-transposed-b/`). Versions `transposed_b` / `tiled_transposed_b` (A row-major, B stored as Bᵀ, loops ijk ± tiling) — professor case b literally. Beats `naive` a lot; loses to `row_wise` / `tiled` (same traffic idea, better loop shape). At n = 2048 tiled-on-Bᵀ is within ~5% of `tiled` (both at T = 32). Absolute milliseconds in that session are higher than the 2026-11-14 sweep; use ratios inside the session. `naive` at n = 2048 skipped: **CPU-time limit** (O(n³) on Ryzen 5 5500U). Figure: `transposed_b_vs_row_wise`.
+
+### Corrected since October
+
+| Old claim | Correction |
+| --- | --- |
+| `cache-misses` = last-level / LLC | **L2** misses on Zen 2 |
+| "10–25× for n ≥ 256" | only at **powers of two**; nearby sizes ~3× |
+| "14× without SIMD is the memory effect" | true at n = 512 (conflicts); **2.3×** at n = 500 |
+| "hardware counts only demand misses" | L2 event yes; **L1 includes prefetch** |
+| "counters do not explain tiled at n = 1024" | L1 counters *should not*; win is L3/RAM reuse (GFLOPS sweep) |
+| "best tile T = 128" as general | power-of-two sizes; at n = 1000 best was **d = 32** (~10% gap, near noise) |
+
+---
+
+## 02 — Merge sort
+
+**Complete** (two sessions, 2026-11-15, Ryzen 5 5500U / WSL2). Report: [experiments/02-merge-sort/README.md](../experiments/02-merge-sort/README.md).
+
+Recursive vs iterative, same `merge`, `int64`, powers of two. **Iterative slightly faster while data fits in L3**; **recursive faster from the L3 boundary** (~**1.10–1.22×**, both runs). L2 misses **~2.5–5×** higher for iterative at `n ≥ 2¹⁸` (small-n counters noisy under WSL2). Theory: recursive \(O((n/L)(1+\log_2(n/Z)))\), iterative \(\Theta((n/L)\log n)\); with the temp buffer counted the ratio is \(\log_2 n / \log_2(2n/Z)\), about **3.1** on this L2 at \(n = 2^{22}\), and the measured L2 ratio there is about **2.7**. Aggarwal–Vitter lower bound needs funnelsort. Figures: `docs/02-merge-sort/figures/2026-11-15-ryzen5500u-wsl2-run2/`.
+

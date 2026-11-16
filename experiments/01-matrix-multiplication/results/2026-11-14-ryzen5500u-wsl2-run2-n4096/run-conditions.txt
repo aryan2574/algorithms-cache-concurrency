@@ -1,0 +1,17 @@
+n = 4096 session of 2026-11-14 ("single row >= L1": one row of 4096 doubles = 32 KiB = L1d;
+the inner loop of row_wise touches a row of B and a row of C = 64 KiB, more than L1).
+Follows run 2 (../2026-11-14-ryzen5500u-wsl2-run2/) with the same conditions:
+  Power source   AC (charger plugged in)
+  Power plan     High performance
+  Programs       Chrome closed, Cursor open (and its gk.exe helper processes)
+Reduced on purpose, because one multiplication at n=4096 takes about 40 s or more:
+  tile sizes     32 64 128 256 512  (4, 8 and 16 left out: they were not better than row_wise at n=2048)
+  versions       tiled, tiled_tile_wise, plus the row_wise baseline
+  oblivious      one parameter, 128 (best one at n=2048), all six versions plus row_wise, col_wise
+  repetitions    3 (median of 3, one warm-up run), instead of 5
+  reference      row_wise (naive would take many minutes)
+  Command        TILE_SIZES="32 64 128 256 512" TILE_SWEEP_SIZES=4096 OBLIVIOUS_SIZES=4096 \
+                 OBLIVIOUS_PARAMS=128 REPS_LARGE=3 TILE_SWEEP_NAIVE_REFERENCE_MAX=512 \
+                 bash scripts/run.sh experiments/01-matrix-multiplication environment tile_sweep oblivious \
+                 --out experiments/01-matrix-multiplication/results/2026-11-14-ryzen5500u-wsl2-run2-n4096
+Memory: WSL has about 3 GB; n=4096 needs under 1 GB per run.

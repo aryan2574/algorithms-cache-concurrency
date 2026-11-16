@@ -35,7 +35,16 @@ load_experiment() {
     : "${EXTRA_ARGS:=}"      # appended after <variant> <size> <repetitions>
     : "${COUNTER_SIZES:=}"   # empty = skip the cache_counters check
     : "${COUNTER_RUNS:=3}"   # runs measured per cache_counters value (more = less noise)
+    : "${COUNTER_VERSIONS:=$VARIANTS}"
+    : "${COUNTER_PARAMS:=$EXTRA_ARGS}"
+    : "${COUNTER_REFERENCE:=}"  # empty = row_wise (multiply) / transpose_naive / recursive
     : "${NOVEC_SIZE:=}"      # empty = skip the no_vectorization check
+    : "${TILE_SIZES:=}"      # empty = skip the tile_sweep check
+    : "${TILE_SWEEP_VERSIONS:=tiled}"
+    : "${TILE_SWEEP_SIZES:=$SIZES}"
+    : "${TILE_SWEEP_NAIVE_REFERENCE_MAX:=1024}"
+    : "${OBLIVIOUS_PARAMS:=}"   # empty = skip the oblivious check
+    : "${OBLIVIOUS_SIZES:=$SIZES}"
 }
 
 # reps_for <size>

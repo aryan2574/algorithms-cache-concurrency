@@ -34,8 +34,17 @@ Results go to `<experiment>/results/<YYYY-MM-DD>-local/` unless `--out` is given
 |---|---|---|
 | `environment` | `environment.txt` | CPU, OS, compiler, flags, git commit, the experiment's parameters |
 | `timings` | `timings.csv` | median runtime of every variant at every size |
-| `cache_counters` | `cache-counters.csv` | Per-run L1 loads/misses, L2 refs/misses and dTLB loads/misses, via `perf` (skipped if unavailable). Columns: `n,algorithm,runs_measured,l1_loads_per_run,l1_load_misses_per_run,l1_miss_rate_pct,cache_refs_per_run,cache_misses_per_run,dtlb_loads_per_run,dtlb_load_misses_per_run`. Generic names depend on the CPU: on AMD Zen 2 `cache-misses` is L2 misses; on Intel it is LLC misses. |
+| `cache_counters` | `cache-counters.csv` | Per-run L1 loads/misses, L2 refs/misses and dTLB loads/misses, via `perf` (skipped if unavailable). Columns: `n,algorithm,tile_size,runs_measured,l1_loads_per_run,l1_load_misses_per_run,l1_miss_rate_pct,cache_refs_per_run,cache_misses_per_run,dtlb_loads_per_run,dtlb_load_misses_per_run`. Generic names depend on the CPU: on AMD Zen 2 `cache-misses` is L2 misses; on Intel it is LLC misses. |
 | `no_vectorization` | `no-vectorization-<n>.csv` | same timings with SIMD auto-vectorisation off, to separate memory effects from SIMD |
+| `tile_sweep` | `tile-sweep.csv` | every version in `TILE_SWEEP_VERSIONS` (`tiled` row-major, `tiled_tile_wise` tile-wise layout, optionally `tiled_col_major`) at every tile size in `TILE_SIZES` and every size in `TILE_SWEEP_SIZES`, with a `row_wise` baseline per size. Tile-wise versions skip tile sizes that do not divide n. Not run by default: ask for it by name. Needs the program to accept `<variant> <size> <repetitions> <tile_size> <reference>`. Stops with an error if checksums differ. |
+
+| `oblivious` | `oblivious.csv` | cache-aware and cache-oblivious versions on row-major, column-major and tile-wise layouts, with plain-loop baselines, at every size in `OBLIVIOUS_SIZES` and every parameter in `OBLIVIOUS_PARAMS` (tile size, or smallest recursion block). Not run by default. Same checksum check. Tile-wise versions need n to be a multiple of the tile size. |
+| `transpose` | `transpose.csv` | out-of-place matrix transposition (`transpose_naive`, `transpose_tiled`, `transpose_oblivious`) at every size in `TRANSPOSE_SIZES` and every parameter in `TRANSPOSE_PARAMS`. Not run by default. Same checksum check. The sixth CSV column holds million elements/s (not GFLOPS). |
+
+```bash
+bash scripts/run.sh experiments/01-matrix-multiplication environment tile_sweep oblivious \
+    --out experiments/01-matrix-multiplication/results/<date>-<machine>
+```
 
 ## Layout
 
@@ -48,8 +57,12 @@ scripts/
     ├── environment.sh
     ├── timings.sh
     ├── cache_counters.sh
-    └── no_vectorization.sh
+    ├── no_vectorization.sh
+    ├── oblivious.sh
+    └── tile_sweep.sh
 ```
+
+Charts are made from the CSV files by a separate Python tool, see [plot/README.md](plot/README.md).
 
 ## What an experiment must provide
 
@@ -58,7 +71,7 @@ scripts/
    - `VARIANTS`: the versions to compare, space separated
    - `SIZES`: the problem sizes
 
-   Optional: `REPS`, `REPS_LARGE`, `LARGE_FROM`, `EXTRA_ARGS`, `COUNTER_SIZES` (empty skips `cache_counters`), `COUNTER_RUNS` (measured runs per counter row; default 3, use 30 or more under WSL2 for n <= 512), `NOVEC_SIZE` (empty skips `no_vectorization`). Write optional settings as `: "${NAME:=value}"` so they can be overridden from the command line (`SIZES`, `VARIANTS`, `EXTRA_ARGS`, `COUNTER_RUNS`, ...). A check that a counter row is usable: `l1_loads_per_run` should be about `1.5 n^3` for the matrix-multiplication experiment.
+   Optional: `REPS`, `REPS_LARGE`, `LARGE_FROM`, `EXTRA_ARGS`, `COUNTER_SIZES` (empty skips `cache_counters`), `COUNTER_RUNS` (measured runs per counter row; default 3, use 30 or more under WSL2 for n <= 512), `COUNTER_VERSIONS`, `COUNTER_PARAMS`, `COUNTER_REFERENCE` (default `row_wise` / `transpose_naive` / `recursive` by version), `NOVEC_SIZE` (empty skips `no_vectorization`), `TILE_SIZES` (empty skips `tile_sweep`), `TILE_SWEEP_VERSIONS`, `TILE_SWEEP_SIZES`, `TILE_SWEEP_NAIVE_REFERENCE_MAX`, `OBLIVIOUS_PARAMS` (empty skips `oblivious`), `OBLIVIOUS_SIZES`, `TRANSPOSE_PARAMS`, `TRANSPOSE_SIZES` (empty skips `transpose`). Write optional settings as `: "${NAME:=value}"` so they can be overridden from the command line (`SIZES`, `VARIANTS`, `EXTRA_ARGS`, `COUNTER_RUNS`, ...). A check that a counter row is usable: `l1_loads_per_run` should be about `1.5 n^3` for the matrix-multiplication experiment.
 2. A program (the CMake target) that follows this contract:
    - It is called as `<executable> <variant> <size> <repetitions> [EXTRA_ARGS...]`.
    - It prints a CSV header line, then one result row, to **stdout**. Progress and error messages go to **stderr**.
@@ -75,7 +88,7 @@ Create `scripts/checks/<name>.sh` that defines a function `check_<name>`. That i
 - `$OUT_DIR` (where to write), `$TMP_DIR` (scratch space), `log`, `warn`, `die`
 - everything from the experiment's `benchmark.conf` (`$VARIANTS`, `$SIZES`, ...)
 
-To run the new check by default, add its name to `DEFAULT_CHECKS` in `run.sh`. Ideas for later: a tile-size sweep, a thread-scaling check, a memory-usage check.
+To run the new check by default, add its name to `DEFAULT_CHECKS` in `run.sh`. Ideas for later: a thread-scaling check, a memory-usage check.
 
 ## Line endings
 

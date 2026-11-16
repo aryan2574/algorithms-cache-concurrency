@@ -1,396 +1,259 @@
-# Experiment 01: Memory-access order in matrix multiplication
+# Experiment 01: Matrix multiplication and the cache
 
-## Research questions
+**Status:** done (multiplication 2026-10-13 to 2026-11-15; transposition measured 2026-11-15). Short version: [docs/findings.md](../../docs/findings.md). What was asked and when: [docs/agenda.md](../../docs/agenda.md). Hardware background: [docs/theory/caches.md](../../docs/theory/caches.md).
 
-Matrices are stored row by row (row-major). Moving along a row follows memory order; moving down a column jumps a whole row at a time. How much does this cost in `C = A * B`, and can cache measurements explain it?
+## 1. Question
 
-1. **Theoretical miss counts** for (a) row-major × row-major (`naive`), (b) row-major × column-major (same traffic as `row_wise` if B is stored transposed; we did not implement a transposed B), (c) tiled with `d × d` tiles. Every answer depends on cache size `Z` and line size `L`.
-2. **Lower bound** from the literature: the fewest cache misses any classical (`n³` multiply-add) algorithm can have.
-3. **Three regimes:** (a) whole matrix < cache, (b) one row < cache < whole matrix, (c) cache < one row. How do the three versions behave in each, and what does the machine actually do?
-4. **Which cache are we measuring?** This CPU has L1, L2 and L3. The generic `perf` name `cache-misses` is **L2 misses** on AMD Zen 2, not last-level / L3. WSL2 cannot count L3 or DRAM.
+`C = A * B` for square `n x n` matrices of `double` always does the same `n³` multiply-adds; only the order of the memory accesses changes. The professor's tasks, in short:
 
-Hardware vocabulary (sets, ways, prefetch, TLB, AMAT) is in [`19-nov.txt`](19-nov.txt). Dated notes of what was done when are in [`docs/findings-log.md`](../../docs/findings-log.md).
+1. Matrices are stored row by row. Walking along a row is cache friendly, walking down a column is not. How much does that cost, and can it be improved? (2026-10-13)
+2. How many cache misses should each version have in theory, what is the lower bound, and how do the versions behave when the whole matrix fits in the cache, when only a row fits, and when not even a row fits? Which cache are we measuring? (2026-11-01)
+3. Do cache-aware (tiled) and cache-oblivious (recursive) algorithms help, on row-major, column-major and tile-wise storage? How does the tile size matter, and what happens when the tile or the matrix does not fit in the cache? (2026-11-14)
+4. The cache-oblivious paper studies a simpler problem first: matrix transposition `B = Aᵀ`. Two nested loops vs a recursive algorithm; work is O(n²), so larger matrices than multiplication are reachable.
 
-## Findings in one page (2026-11-01)
+## 2. Versions
 
-On an AMD Ryzen 5 5500U (L1d 32 KiB / L2 512 KiB / L3 4 MiB, 64-byte lines), `double` matrices, Release `-O3`:
+All in [`main.cpp`](main.cpp). Every version of a given problem computes the same answer and prints the same checksum; each run checks its result against a reference version before timing.
 
-| What                                                                                                                 | Why it happens                                                                                                                                                                                                                                                                                                   |
-| -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `row_wise` L1 misses = `n³/8`, within 1–7%                                                                           | Inner loop walks rows. One 64-byte line serves 8 doubles. This is the formula, and the counter matches it at every size we ran.                                                                                                                                                                                  |
-| `naive` L1 misses ≈ `n³` at n = 256, 400, 500, 512, 1000, 1024                                                       | The inner loop walks a **column** of B. Each step is a new cache line, so almost every access misses. At n = 250 the column still fits in L1 and misses drop to about `n³/8`.                                                                                                                                    |
-| `naive` is 3–4× slower than `row_wise` at n = 250, 400, 500, but **9–24×** at n = 256, 512, 1024                     | Extra factor is **conflict misses**, not capacity. A power-of-two row is a multiple of 4096 bytes, so a whole column of B maps to 1 or 2 L1 sets (8 ways). Those 8–16 lines cannot hold a column of 256–1024 lines, so L1 (and at 512/1024 also L2) thrashes.                                                    |
-| `naive` at n = 1024 is 5.6× slower than at n = 1000, for 2.4% more work                                              | n = 1024 column → 1 L1 set and 8 L2 sets. n = 1000 column spreads over all 64 L1 sets and all 1024 L2 sets. Same arithmetic; the address mapping is different.                                                                                                                                                   |
-| `tiled` (d = 32) does nothing useful up to n = 512, then is **2.0–2.4×** faster than `row_wise` at n = 1000 and 1024 | `row_wise` streams all of B once per row of A. B is 8 MB at n = 1024 and no longer fits in the 4 MiB L3, so that stream comes from RAM (~11 GB/s). Tiling reuses each B tile `n/d` times while it is still in L2/L3. L1 miss counts go **up** for tiled; the win is fewer trips to RAM, which WSL2 cannot count. |
-| Tile-size sweep at n = 1000: d = 32 is fastest (6.53 GFLOPS). d = 8 is slow; d = 64 and 128 fall off                 | L1 optimum is `d* ≈ √(Z/3) ≈ 37`. d = 32 fits three tiles in L1; d = 64 does not (3 × 64² = 12 288 doubles > 4096).                                                                                                                                                                                              |
-| Without SIMD at n = 500, `row_wise` is still 2.3× faster than `naive`                                                | Access order, not vectorisation, is the main effect. SIMD (SSE2 only; no AVX2 in this build) adds about 1.2× for `row_wise`/`tiled`. The old “14× without SIMD at n = 512” mixed this with the power-of-two conflict.                                                                                            |
+### Multiplication
 
-**Corrections to the 2026-10-18 write-up:** `cache-misses` is L2, not last-level. “10× to 25× for n ≥ 256” is the power-of-two case; nearby sizes are ~3×. The hardware L1 miss counter **includes** prefetches; the L2 counter **excludes** L2 prefetches. Load counts near `1.5 n³` are expected (`L1-dcache-loads` counts loads and stores, one per instruction, and SSE2 moves 2 doubles).
+| | row-major | column-major | tile-wise |
+| --- | --- | --- | --- |
+| plain loops | `naive` (loops i, j, k), `row_wise` (i, k, j) | `col_wise` (j, k, i) | - |
+| cache-aware (tile size T) | `tiled` | `tiled_col_major` | `tiled_tile_wise` |
+| cache-oblivious (recursive) | `oblivious_row_major` | `oblivious_col_major` | `oblivious_tile_wise` |
 
----
+- `naive` is the textbook loop: its inner loop walks **down a column** of B (a jump of `8n` bytes per step). `row_wise` swaps the two inner loops, so the inner loop walks **along rows** of B and C.
+- `tiled` does the `row_wise` loops on one `T x T` tile of A, B and C at a time, so the three tiles can stay in the cache.
+- Layouts: row-major stores element (r, c) at `r*n + c`, column-major at `c*n + r`, tile-wise stores each `T x T` tile as one contiguous block. The input is converted to the layout before timing.
+- Cache-oblivious: the largest of the three loop ranges is halved recursively until the block is small. It never uses a cache size; at some depth the blocks fit in every cache level by themselves. On the tile-wise layout the tile size is part of the layout, so that version is only partly oblivious.
 
-## Theory
+### Transposition (out of place, both matrices row-major)
 
-### Cache lines
+| Version | Idea |
+| --- | --- |
+| `transpose_naive` | two nested loops: read a row of A, write a column of B (strided writes) |
+| `transpose_tiled` | same copy in `T x T` tiles (cache-aware) |
+| `transpose_oblivious` | recursively split the longer side until the block is small (cache-oblivious) |
 
-The CPU fetches 64-byte **cache lines**, not single numbers. A line holds `L = 8` doubles.
+The sixth CSV column is still named `gflops` for the shared program format; for transpose it holds **million elements copied per second**.
 
-```text
-A = [ 1  2  3  4  5]
-    [ 6  7  8  9 10]
-    [11 12 13 14 15]
-```
+### Multiplication with B stored transposed (professor case b, literally)
 
-1. Along a row (`1 → 2 → 3 → 4`): neighbours in memory. One line serves several accesses.
-2. Down a column (`1 → 6 → 11`): skip the rest of the row. Distance = `n × 8` bytes. For `n = 512` that is 4096 bytes, so every vertical step is a **different line** and, on this L1, the **same set**.
+| Version | Idea |
+| --- | --- |
+| `transposed_b` | A row-major, B replaced by Bᵀ (outside the timed region); loops **i,j,k** so both streams walk contiguously in k |
+| `tiled_transposed_b` | the same, in `T x T` tiles |
 
-### Model and notation
+Previously case b was only covered by `row_wise` (same access *pattern*, B still row-major). These versions store Bᵀ for real.
 
-Ideal-cache model (Frigo, Leiserson, Prokop, Ramachandran, FOCS 1999): one cache of `Z` elements, line size `L` elements, fully associative, optimal replacement. `Q` = number of lines moved into the cache (misses).
+![The three layouts: same colour = same 64-byte cache line](../../docs/01-matrix-multiplication/diagrams/memory_layouts.png)
 
-| Level                |   Bytes | `Z` (doubles) |  Lines | `L` |
-| -------------------- | ------: | ------------: | -----: | --: |
-| L1 data              |  32 KiB |         4 096 |    512 |   8 |
-| L2                   | 512 KiB |        65 536 |  8 192 |   8 |
-| L3 (usable, one CCX) |   4 MiB |       524 288 | 65 536 |   8 |
+How the recursion splits the work: [recursion diagram](../../docs/01-matrix-multiplication/diagrams/recursion_steps.png).
 
-On this CPU the L3 is a **victim cache** (a line enters L3 only when L2 evicts it) and is shared by 3 cores. One core can keep about 4.5 MiB (L2 + L3) close by. WSL2 reports 4 MiB L3.
+## 3. Theory
 
-### Two counting rules
+The model is the ideal cache: one cache of `Z` elements with lines of `L` elements, fully associative, optimal replacement; `Q` = number of lines moved into the cache (misses). Here `L = 8` doubles (64 bytes) and `Z` = 4096 (L1, 32 KiB), 65 536 (L2, 512 KiB) or 524 288 doubles (L3, 4 MiB). Two counting rules: a contiguous walk of `m` elements costs `m/L` misses; a walk with a stride of a line or more costs `m` misses unless those lines are still in the cache.
 
-1. A contiguous walk of `m` doubles costs `m / L` misses (one miss per line).
-2. A walk with stride ≥ one line (a column of B) costs `m` misses, unless those `m` lines already sit in the cache.
+| Version | Misses `Q` (one cache level) | Condition |
+| --- | --- | --- |
+| `naive` | `n³/L + 2n²/L` | the column of B (n lines) fits in the cache and does not collide in a few sets |
+| `naive` | `≈ n³` | otherwise (on L1: from n ≈ 455, or earlier through set conflicts) |
+| `row_wise` (= row-major times column-major, the professor's case b) | `n³/L + 2n²/L` | two rows fit (`2n ≤ Z`) |
+| `tiled`, `d x d` tiles | `2n³/(dL) + n²/L` | three tiles fit (`3d² ≤ Z`); best `d ≈ √(Z/3)`: 37 for L1, 148 for L2 |
+| any algorithm with `n³` multiply-adds | `≥ 2n³/(L√Z)` | lower bound (Hong and Kung 1981; tight constant: Smith et al., arXiv:1702.02017) |
+| any algorithm | `≥ 3n²/L` | read A and B once, write C once |
 
-Compulsory traffic for any algorithm that reads A, B and writes C once: `Q ≥ 3 n² / L`.
+**The lower bound** is a proof, not a measurement: no loop order can move fewer lines (Strassen-type algorithms can, because they do fewer multiplications). On L1 it is `n³/256`. `naive` is 256 times above it, `row_wise` 32 times, `tiled` with d = 32 two times. The cache-oblivious recursion matches this bound's order, `Θ(n³ / (L √Z))`, at every cache level without knowing `Z` (Frigo et al. 1999). The constant 2 in the table is the leading term of Smith et al.; the big-O of the recursive algorithm does not claim that constant.
 
-### (a) `naive` — row-major × row-major, loop order (i, j, k)
+**The three regimes** have to be read per cache level, because L1, L2 and L3 have different `Z`:
 
-Inner loop: `sum += A[i,k] * B[k,j]`. A is walked along a row; B is walked **down a column**.
+| Regime | L1 | L2 | L3 | Expected behaviour |
+| --- | --- | --- | --- | --- |
+| (a) whole matrix < cache (`n² < Z`) | n < 64 | n < 256 | n < 724 | only the compulsory misses; all versions close |
+| (b) one row < cache < whole matrix | 64 ≤ n ≤ 4096 | n ≥ 256 | n ≥ 724 | `row_wise` `n³/L`, limited by bandwidth; `naive` `n³` when the column does not fit or collides, limited by latency; `tiled` `2n³/(dL)` |
+| (c) cache < one row (`Z < n`) | n > 4096 | - | - | `row_wise` `2n³/L` (B and C both stream); `tiled` unchanged while `3d² ≤ Z` |
 
-For each of the `n²` pairs `(i, j)` the inner loop does `n` accesses to B, each a new line. Those `n` lines (one column) stay in cache only if they fit **and** do not collide in one set.
+**What the model leaves out** shows up in the measurements: caches are 8- or 16-way set-associative, so at power-of-two `n` a column of B lands in one or two L1 sets (conflict misses); prefetchers hide latency (the L1 counter includes prefetched lines, the L2 counter does not); the L3 is a victim cache shared by three cores, so less than 4 MiB is usable; the TLB covers only 8 MiB; the allocator puts every matrix at page + 16 bytes, so a row takes one line more. Details: [theory sections 6, 12, 13 and 17](../../docs/theory/caches.md).
 
-- **Column fits** (`Z ≥ (L+1) n` lines: the column plus the current row of A): B is paid once per line, `Q ≈ n³ / L + 2 n² / L`.
-- **Column does not fit** (capacity: `n` lines > `Z / L`, or conflict: the column uses fewer sets than it has lines): almost every B access misses, `Q ≈ n³`. With LRU, the sequential walk of A can miss as well and `Q ≈ n³ (1 + 1/L)`.
+## 4. Method
 
-On L1, `(L+1) n ≤ 4096` means `n ≤ 455`. That is why n = 250 is the only size in this study where `naive` should (and does) look like `n³/L`. At n = 400 the fully-associative test still says “fits”, but a 400-element column uses only 32 of 64 L1 sets (8 × 32 = 256 lines < 400), so it **conflicts** and we see `n³`.
+- **Machine:** AMD Ryzen 5 5500U (Zen 2), one thread. L1d 32 KiB (64 sets x 8 ways), L2 512 KiB (8-way), L3 4 MiB (16-way, victim cache), 64-byte lines, 4 KiB pages. WSL2 (Ubuntu), g++ 15.2.0 `-O3 -DNDEBUG` without `-march=native`, so SIMD is SSE2 (2 doubles per instruction). Every results folder has an `environment.txt`.
+- **Inputs:** uniform random numbers in [-1, 1], fixed seed; the same checksum for every version and session.
+- **Timing:** one warm-up run, then the median of 7 repetitions (5 from n = 1024, 3 at n = 4096). Each version runs in its own process.
+- **Counters:** `perf stat`, user-mode events. To remove setup and the reference check, each version runs with 1 and with 1 + R repetitions and the difference is divided by R (R = 30 for n ≤ 512 and 10 above, on 2026-11-01; R = 3 in October, which is too noisy under WSL2). A row is usable when the L1 loads are about `1.5 n³`.
+- **Which cache the counters see:** `cache-misses` counts **L2 misses** on this CPU (not last-level misses as on Intel), excluding L2 prefetches. `L1-dcache-load-misses` counts lines brought into L1, including prefetches. WSL2 has no L3 or RAM counters, so L3 effects are seen only in the timings.
 
-### (b) Row-major × column-major
+| Session (`results/`) | Contents | Used for |
+| --- | --- | --- |
+| `2026-10-18-ryzen5500u-wsl2` | `naive`, `row_wise`, `tiled` at n = 64-1024; counters (3 runs) at 512, 1024; no-SIMD at 512 | first look |
+| `2026-11-01-ryzen5500u-wsl2` | n = 250, 256, 400, 500, 512 and `large-n/` 1000, 1024; counters (30 / 10 runs) with TLB; `l3-sweep/` n = 600-1000; `tile-sweep/` at n = 1000; no-SIMD at 500 | access order, counters, L3 |
+| `2026-11-14-ryzen5500u-wsl2-run2` | tile sizes T = 4-512 and all nine versions at n = 256-2048 (laptop on AC power, High performance plan) | tile size, layouts, cache-oblivious |
+| `2026-11-14-ryzen5500u-wsl2-run2-n4096` | four runs at n = 4096, stopped for time | indicative only |
+| `2026-11-14-ryzen5500u-wsl2` | first tile sweep, noisy (Balanced power plan) | not used |
+| `2026-11-15-ryzen5500u-wsl2-counters` | counters for all nine versions, stopped | not used (partial) |
+| `2026-11-15-ryzen5500u-wsl2-transpose` | transpose naive / tiled / oblivious, n = 1024…8192 | transposition timings |
+| `2026-11-15-ryzen5500u-wsl2-transpose-counters` | transpose perf counters, n = 1024…4096 | transposition L1/L2 |
+| `2026-11-15-ryzen5500u-wsl2-transposed-b` | `transposed_b` / `tiled_transposed_b` vs `row_wise` / `tiled` | case b literally |
 
-If B were stored **column-major**, `naive`'s inner loop would walk B in memory order. The miss count is then the same as our `row_wise` on row-major storage: `Q ≈ n³ / L` whenever two rows fit (`2n ≤ Z`). We did not implement a transposed B; `row_wise` is the equivalent access pattern.
+## 5. Results
 
-### `row_wise` — loop order (i, k, j)
+### 5.1 Access order: `naive` against `row_wise`
 
-Inner loop walks `B[k, :]` and `C[i, :]` (contiguous). Working set: two rows = `2n` doubles.
+![naive against row_wise at sizes that are and are not powers of two](../../docs/01-matrix-multiplication/figures/2026-11-01-ryzen5500u-wsl2/access_power_of_two.png)
 
-- Two rows fit (`2n ≤ Z`), matrix B does not (`n² > Z`): each of the `n³` inner-loop accesses to B is sequential, so `Q ≈ n³ / L + 2 n² / L`.
-- On L1 this holds for all our n (need only `n ≤ 2048`). The **time** still changes with n, because the `n³ / L` lines have to come from L2, L3 or RAM depending on whether B itself fits there.
+- Swapping two loops gives the same result much faster. At sizes that are not powers of two `naive` is **2.4-3.4x** slower than `row_wise` (n = 250, 400, 500, 1000). At powers of two it is **9.4x** (256), **24.3x** (512) and **12.2x** (1024).
+- The extra factor at powers of two comes from **conflict misses**. A row is then a multiple of 4096 bytes, so the whole column of B maps to one or two L1 sets of 8 lines each. At n = 512 and 1024 the column also overflows L2: about one L2 miss per multiply-add (136 M and 1089 M per multiplication), against 0.4-1.5 M at n = 250-500.
+- n = 1024 takes 5.6 times longer than n = 1000 for 7.4% more work. Besides the conflicts, the TLB overflows at n = 1024 (three matrices are 6144 pages, the L2 TLB holds 2048): 114 M page walks against 3.2 M at n = 1000.
+- At n = 256 the counters do not show the cause: L1 misses are about `n³` as at n = 400 and 500, and L2 misses and page walks are low.
+- **It is not vectorisation.** Without auto-vectorisation `row_wise` is still 2.3x faster than `naive` at n = 500 (60 against 136 ms); SIMD adds a factor of 1.2 to `row_wise` and `tiled` and nothing to `naive`. The October check at n = 512 gave 14x without SIMD because 512 is a power of two. ([figure](../../docs/01-matrix-multiplication/figures/2026-11-01-ryzen5500u-wsl2/simd_vectorization.png))
 
-### (c) `tiled` — `d × d` tiles, (i, k, j) inside each tile
+The October session (n = 64 to 1024) shows the same picture: [overview_baseline](../../docs/01-matrix-multiplication/figures/2026-10-18-ryzen5500u-wsl2/overview_baseline.png).
 
-Three tiles (a piece of A, of B, of C) must fit: `3 d² ≤ Z`, i.e. `d ≤ √(Z/3)`. Also want `d ≥ L` so a tile row is at least one line.
+### 5.2 Cache misses against the formulas
 
-Each B tile is reused `n/d` times (once per A-tile-row). Traffic:
+![L1 miss rate, L1 misses per multiply-add and L2 misses](../../docs/01-matrix-multiplication/figures/2026-11-01-ryzen5500u-wsl2/cache_misses.png)
 
-`Q ≈ 2 n³ / (d L) + n² / L`
+- `row_wise` L1 misses equal `n³/L` within 1-7% at every size (the extra line per row from the allocation offset).
+- `naive` L1 misses are about `n³` at every size except n = 250, where the column fits in L1 and the count drops to 0.2 `n³` (1.6 times `n³/L`).
+- `tiled` (d = 32) is 4-5 times above `2n³/(dL)` at ordinary sizes and about 38 times above it at powers of two, where the 32 rows of a tile collide in one or two L1 sets.
+- Against the lower bound at n = 1000: `naive` 289 times above it (theory 256), `row_wise` 33 times (theory 32), `tiled` 11 times (ideal 2).
+- `row_wise` has far fewer L2 misses than `n³/L` because the L2 prefetcher brings the lines in and the counter leaves those out.
 
-| Cache | `√(Z/3)` | Practical `d` |
-| ----- | -------: | ------------: |
-| L1    |       37 |            32 |
-| L2    |      148 |           128 |
-| L3    |      418 |       256–400 |
+### 5.3 Where tiling pays off: B no longer fits in L3
 
-d = 32 is the L1 choice. Larger d helps L2/L3 reuse but overflows L1.
+![row_wise and tiled from n = 512 to 1000](../../docs/01-matrix-multiplication/figures/2026-11-01-ryzen5500u-wsl2/tile_l3_sweep.png)
 
-### What “the lower bound” means (question 2)
+- Up to n = 512 `tiled` is no faster than `row_wise`. From about n = 600 `row_wise` slows down gradually, from 5.3 GFLOPS (n = 600) to 2.6 (n = 1000), while `tiled` stays between 5.6 and 6.9 GFLOPS: **1.3x at n = 600, 1.9x at 725, 2.4x at 1000**.
+- `row_wise` reads all of B once for every row of A. Once B no longer fits in the usable L3 it comes from RAM: 8.6 GB per multiplication at n = 1024 in 788 ms, about 11 GB/s, a normal rate for one core. `tiled` reuses each tile of B many times while it is in L2 or L3.
+- The drop is not a step at n = 724 (B = 4 MiB) because the L3 is a shared victim cache that A and C also pass through.
+- The L1 counters cannot show this win (`tiled` has more L1 misses than `row_wise` at n = 1024: 317 M against 144 M), and WSL2 cannot count L3 or RAM traffic. The evidence is the timing.
 
-It is **not** “the smallest number we measured”. It is a proof that **no** algorithm which does the classical `n³` multiply-adds can move fewer than this many words between cache and memory, no matter the loop order.
+### 5.4 Tile size, and tiles that do not fit
 
-Intuition (Hong and Kung 1981; Loomis–Whitney): a cache that holds `Z` numbers can only “see” about `Z^{3/2}` useful multiply-adds before it must reload. Doing `n³` work therefore needs about `n³ / Z^{3/2}` reloads of `Z` words, i.e. `Ω(n³ / √Z)` word transfers, or in lines
+![Time against tile size](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/tile_size_vs_time.png)
 
-`Q ≥ 2 n³ / (L √Z)`
+- For n ≥ 1024 the time over the tile size is U-shaped. Very small tiles are worse than no tiling at all: T = 4 is slower than `row_wise` at every n (5.3x slower at n = 2048).
+- The best tile at n = 1024 and 2048 is **T = 128** on both layouts (T = 64 is within 2-13%). It is 1.9-2.2x faster than `row_wise` on the row-major layout and 2.6-2.7x on the tile-wise layout. At n ≤ 512 tiling gives no clear gain.
+- At n = 1000 (not a power of two) the best tile was d = 32 (6.5 GFLOPS), as the L1 formula predicts (`√(Z/3) ≈ 37`); d = 64 and 128 were 8-10% slower, close to the noise. A likely reason for the larger best tile at powers of two is that small row-major tiles collide in a few sets there; this was not measured.
 
-(tight constant: Smith, Lowery, Langou, van de Geijn, arXiv:1702.02017; they also subtract `2Z`, which is negligible for our n). Plus the compulsory `3 n² / L`.
+![Speed against the memory the three tiles need](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/tile_fit_regimes.png)
 
-The bound does **not** apply to Strassen-type algorithms (Ballard et al., 2012): those do fewer than `n³` multiply-adds.
+- **A tile that does not fit:** the best point, T = 128, needs 384 KiB for three tiles: it fits L2, not L1. At T = 512 (6 MiB, more than L3) the row-major time more than doubles at n = 2048 and ends 18% slower than `row_wise`; the tile-wise layout only loses 13%.
 
-| Version                  | Predicted `Q` (regime: two rows fit, matrix does not) | Ratio to the bound     |
-| ------------------------ | ----------------------------------------------------- | ---------------------- |
-| `naive` (column misses)  | `n³`                                                  | `L √Z / 2` = 256 on L1 |
-| `row_wise`               | `n³ / L`                                              | `√Z / 2` = 32 on L1    |
-| `tiled` at our d = 32    | `2 n³ / (d L)`                                        | `√Z / d` = 2 on L1     |
-| `tiled` at `d* = √(Z/3)` | `2 n³ √3 / (L √Z)`                                    | `√3 ≈ 1.73`            |
+### 5.5 Layouts, cache-aware and cache-oblivious
 
-Cache-oblivious recursion (Frigo et al.) meets the bound at **every** cache level without knowing `Z`. That is the natural next version.
+![All versions ranked at n = 1024 and 2048](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/overview_ranking.png)
 
-### The three regimes
+Median time at n = 2048, best parameter of each version (ms):
 
-Three cases, written for one cache of `Z` elements. They must be applied **per level**: L1, L2 and L3 have different `Z`.
+| Layout | plain loops | cache-aware | cache-oblivious |
+| --- | ---: | ---: | ---: |
+| row-major | 4905 | 2333 | 2408 |
+| column-major | 4856 | 2787 | 2588 |
+| tile-wise | - | 1884 | **1819** |
 
-| Regime                       | Definition   | On this laptop                                                    |
-| ---------------------------- | ------------ | ----------------------------------------------------------------- |
-| (a) whole matrix < cache     | `n² < Z`     | L1: n < 64. L2: n < 256. L3: n < 724.                             |
-| (b) one row < cache < matrix | `n ≤ Z < n²` | L1: 64 ≤ n ≤ 4096 (all our n after 64). L2: 256 ≤ n. L3: 724 ≤ n. |
-| (c) cache < one row          | `Z < n`      | L1 would need n > 4096. We never reach it.                        |
+- **Cache-oblivious is as fast as the tuned cache-aware version** on every layout (within 8% for n ≥ 512, about the noise) when each side uses its best parameter. That parameter for the recursion is the block size where it stops, not a cache size, and it still changes the time by about 20%. Held fixed at 32, it is 25% slower than the best row-major tile at n = 2048, so the cutoff is not free. The tile-wise recursion is only partly oblivious: the tile size is part of the layout.
+- The fastest version is the recursion on the tile-wise layout: 1819 ms at n = 2048 (9.4 GFLOPS, 2.7x faster than `row_wise`).
+- The layout matters for tiled code: at the same tile size the tile-wise layout needs 13-18% less time at n = 1024 and 25-32% less at n = 2048 (T = 32 to 256). Why was not measured (the counter run for these versions was stopped); conflict misses, TLB and prefetching are the likely reasons.
+- Column-major mirrors row-major for the plain loops (within 2% for n ≥ 1024). The tiled column-major version is up to 20% slower than the row-major one at n = 2048, for an unknown reason.
 
-What each algorithm does:
+![Best cache-aware time divided by best cache-oblivious time](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/oblivious_vs_aware.png)
 
-|            | (a) matrix fits            | (b) row fits, matrix does not                                                               | (c) row does not fit                 |
-| ---------- | -------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `naive`    | only compulsory `3 n² / L` | `n³ / L` if the column fits and does not conflict; **`n³` if it conflicts or `Z < (L+1)n`** | `n³ (1 + 1/L)` — A and B both miss   |
-| `row_wise` | compulsory                 | `n³ / L` as long as `2n ≤ Z`                                                                | `2 n³ / L` — B and C both stream     |
-| `tiled`    | compulsory                 | `2 n³ / (d L)` if three tiles fit                                                           | **unchanged**, as long as `3 d² ≤ Z` |
+All versions against n, with the cache sizes marked: [overview_gflops_vs_n](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/overview_gflops_vs_n.png). The plain loops drop from about 8 to 3.6 GFLOPS between n = 512 and 1024, where one matrix (8 MiB) outgrows L3; the tile-wise versions stay at 9-9.7 GFLOPS.
 
-What the **system** does in each regime (this is the machine, not the formula):
+### 5.6 A row as large as L1 (n = 4096)
 
-- **(a)** After a warm-up, A, B and C live in that cache. Hits. The three versions should be close; leftover differences are loop overhead and a few conflicts. At n = 64 (Oct 18) `naive` was still 2.6× slower: 64² doubles = 32 KiB, so **one** matrix fills L1 and three do not.
-- **(b)** The CPU keeps the current row(s) or tile and must reload the rest. `row_wise` is bandwidth-bound: prefetchers hide latency, time ≈ `(bytes moved) / bandwidth`. `naive`'s column walk has no useful prefetch (and at power-of-two n, no useful associativity), so it is **latency-bound**: each miss waits ~12 cycles (L2) or ~40 (L3) or ~100 ns (RAM). Tiling cuts bytes moved by about `n/d` at the level the tile was sized for.
-- **(c)** Even one row spills. `row_wise` loses its 8-wide line reuse for C as well. Tiling is the algorithm that still makes sense. We cannot show this on L1 without n > 4096 (or a cache simulator).
+Only partly measured, on purpose: one multiplication takes 20-40 s and the full sweep would have taken more than an hour. `row_wise` took 37.5 s (3.7 GFLOPS, about the same as at n = 2048) and `tiled` with T = 128 took 20.9 s (1.8x faster). The extra slowdown of `row_wise` expected once a row (32 KiB) fills L1 did not appear. Regime (c) on L1 needs n > 4096, and n = 8192 does not fit in the 3 GB of memory of this WSL2.
 
-For **our sizes on L1**, everyone except n = 64 is in regime (b). The interesting split inside (b) is “does the B column fit / conflict?”, which is why n = 250 and n = 256 behave like different algorithms.
+### 5.7 How far the numbers can be trusted
 
-### What the model leaves out
+The same configuration measured twice in one session differs by 4.1% (median of 28 pairs; 3.2% for n ≥ 512), see [quality_noise_check](../../docs/01-matrix-multiplication/figures/2026-11-14-ryzen5500u-wsl2-run2/quality_noise_check.png). Differences under about 10% are treated as noise, and n = 256 (a few milliseconds per run) is not used for conclusions. Absolute times also depend on the power plan of the laptop; ratios and miss counts repeat between sessions.
 
-| Reality                                                       | Effect we actually see                                                                                                                                                             |
-| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 8-way (L1/L2) / 16-way (L3), not fully associative            | Power-of-two n: a B column uses 1 L1 set. `tiled` at n = 256/512/1024: the 32 tile rows also share a set, so L1 misses jump ~38× above the formula.                                |
-| Allocations sit at page + 16 bytes (checked 2026-11-01)       | Every row starts mid-line → `n/L + 1` lines, not `n/L`. A 32-double tile row spans **5 lines, not 4**. About +25% for tiled, +1–3% for `row_wise`.                                 |
-| L1 miss counter includes prefetches; L2 miss counter does not | `row_wise` L1 ≈ theory; `row_wise` L2 is far **below** `n³/L` because the L2 prefetcher already moved the lines.                                                                   |
-| Several levels; L3 is a victim cache                          | `row_wise` time drops gradually from n ≈ 600, not as a cliff at n = 724. Effective L3 is smaller than 4 MiB (shared, victim, A and C also pass through).                           |
-| TLB (64 L1 + 2048 L2 entries, 4 KiB pages)                    | `naive` at n = 512: ~n³ L1-TLB misses, but only ~1 M page walks (L2 TLB still holds 1536 pages). At n = 1024: 3 matrices = 6144 pages > 2048, and we counted **114 M page walks**. |
-| Pseudo-LRU, not optimal / Belady                              | Same counts as the formulas except near a size boundary.                                                                                                                           |
+### 5.8 Transposition (`B = Aᵀ`)
 
----
+![naive vs best tiled vs best recursive transpose](../../docs/01-matrix-multiplication/figures/2026-11-15-ryzen5500u-wsl2-transpose/transpose_vs_n.png)
 
-## The three versions (`main.cpp`)
+Out-of-place transposition on the same machine (session `2026-11-15-…-transpose`). Work is O(n²), so n = 8192 finishes in about a second where multiplication would take minutes.
 
-All three compute `C = A * B`. Storage is contiguous row-major: `(i, j)` is at `i * n + j`. They differ only in access order. Every run checks its result against `naive` (tolerance 1e-9) before timing.
+| n | `transpose_naive` | best tiled | best oblivious | speed-up |
+| --- | ---: | ---: | ---: | ---: |
+| 1024 | 13.3 ms | 5.6 ms (T=16) | **4.3 ms (base=16)** | **3.1×** |
+| 2048 | 151.6 ms | 25.9 ms (T=16) | **25.4 ms (base=16)** | **6.0×** |
+| 4096 | 665 ms | 123 ms (T=16) | **121 ms (base=16)** | **5.5×** |
+| 8192 | 4171 ms | 1293 ms (T=16) | **1024 ms (base=16)** | **4.1×** |
 
-| Name       | Loop order                   | What the inner loop does to B                                  |
-| ---------- | ---------------------------- | -------------------------------------------------------------- |
-| `naive`    | i, j, k                      | `B[k*n + j]` changes k: **down a column** (stride `n*8` bytes) |
-| `row_wise` | i, k, j                      | `B[k*n + j]` changes j: **along a row**                        |
-| `tiled`    | i, k, j inside `d × d` tiles | same as `row_wise`, one tile at a time                         |
+Checksums match within each n. The recursive version matches the best tiled choice for n ≤ 4096 and is clearly ahead at n = 8192. Parameter 16 wins every time; T ≥ 32 falls off (at n = 4096, tiled T=16 → T=32 is 123 → 410 ms). Naive throughput drops with n (79 → 16 Melem/s) because the column writes leave the cache. At n = 8192 one row is already larger than L1.
 
-## How to build and run
+![transpose cache counters](../../docs/01-matrix-multiplication/figures/2026-11-15-ryzen5500u-wsl2-transpose-counters/transpose_cache_misses.png)
 
-From the repository root (Release is the default; see the main [README](../../README.md)):
+Counters (n = 1024…4096, parameter 16): recursive has **5–10×** fewer L2 misses than nested loops. L1 miss *rate* can look worse for the fast versions; L1 misses *per element* and L2 misses agree with the timings. Counters at n = 8192 were not run: **CPU-time limit** under `perf` on this laptop (see §7).
+
+### 5.9 Store B transposed (`transposed_b` / `tiled_transposed_b`)
+
+![B transposed vs row_wise](../../docs/01-matrix-multiplication/figures/2026-11-15-ryzen5500u-wsl2-transposed-b/transposed_b_vs_row_wise.png)
+
+| n | `naive` | `transposed_b` | `row_wise` | `tiled_transposed_b` | `tiled` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 512 | 907 ms | 112 ms | **37 ms** | 68 ms | 40 ms |
+| 1024 | 10469 ms | 1166 ms | 896 ms | 527 ms | **381 ms** |
+| 2048 | skipped* | 9749 ms | 8149 ms | 4470 ms | **4271 ms** |
+
+\*Skipped: **CPU-time limit** — `naive` is O(n³); ~10 s median at n = 1024 on this Ryzen 5 5500U, about eight times more work at n = 2048, and the default reference check is also naive (`STOPPED.txt` in that results folder).
+
+Storing Bᵀ + ijk already beats `naive` a lot (contiguous k-streams). It still loses to `row_wise` (same idea, better loop / SIMD shape without changing layout). Tiling on Bᵀ nearly matches ordinary `tiled` at n = 2048 (~5% slower: 4470 ms against 4271 ms, both at T = 32).
+
+These absolute times are from a later session than §5.5 and sit higher (`row_wise` at n = 2048 is 8149 ms here and 4905 ms there). Compare versions inside this table. The ratio `row_wise` / `tiled` at n = 2048 is about 1.9 here and in the tile sweep.
+
+## 6. Conclusions
+
+1. **Access order is the main effect.** Walking along rows instead of down columns makes the same arithmetic 2.4-3.4x faster at ordinary sizes and 9-24x at powers of two, where cache-set conflicts and, at n = 1024, the TLB add to it. Vectorisation is a small part (1.2x).
+2. **The miss formulas hold where the model's assumptions hold:** `row_wise` has `n³/L` L1 misses within 1-7%; `naive` has `n³` once the column of B does not fit or collides. The deviations (conflicts, prefetching, alignment) are explained by the real cache.
+3. **Tiling pays off once the data leaves L3** (from n ≈ 600): 2.4x at n = 1000. The tile size matters: too small is worse than no tiling, too large (T = 512) can be worse than no tiling on the row-major layout.
+4. **Cache-oblivious recursion matches tuned tiling** without knowing any cache size, so the question "which tile size?" mostly disappears.
+5. **Storing tiles contiguously** (tile-wise) is the fastest layout for tiled and recursive code, up to 2.7x faster than `row_wise` at n = 2048. Column-major only mirrors row-major.
+6. **Regimes:** this machine shows regimes (a) and (b) at every level; (c) on L1 is out of reach (n > 4096).
+7. **Transposition** confirms the same cache story at larger n (O(n²)): recursive is up to 6× faster than nested loops and has 5–10× fewer L2 misses.
+8. **Storing Bᵀ** beats `naive` but not `row_wise`; tiled-on-Bᵀ nearly matches ordinary `tiled`.
+
+## 7. Limits and open questions
+
+- WSL2 counts only user-mode events, has no L3 or RAM counters, and its counts are noisy (30 runs needed for n ≤ 512).
+- **CPU-time limits of this machine (one Zen 2 core):** transpose `perf` stopped at n = 4096; `naive` multiply skipped at n = 2048 in the transposed-b session. Not algorithm gaps — wall time under O(n³) / `perf` on this laptop.
+- Why the tile-wise layout wins was not measured: the multi-layout multiply counter run was stopped (`results/2026-11-15-...-counters`). Also open: `naive` at n = 256, and the slower tiled column-major version at n = 2048.
+- n = 4096 multiply only partly measured; regime (c) not reached.
+- One machine, one thread, `double`, SSE2 only. Only medians are stored (no error bars). No Z-order layout.
+- The 2026-11-14 timings were taken before that code was committed (it is the code committed on 2026-11-15).
+
+## 8. Reproduce
+
+Build from the repository root as in the [main README](../../README.md). The program:
 
 ```bash
-./build/experiments/01-matrix-multiplication/matrix_multiplication row_wise 512
+./build/experiments/01-matrix-multiplication/matrix_multiplication <version> <n> [repetitions=7] [tile_size=32] [reference]
+# multiply reference: naive|row_wise; transpose reference: transpose_naive
 ```
 
-Usage: `matrix_multiplication <naive|row_wise|tiled> <n> [repetitions=7] [tile_size=32]`
-
-To reproduce the 2026-11-01 folder:
+Measurements use the shared scripts ([scripts/README.md](../../scripts/README.md)) with the settings in [benchmark.conf](benchmark.conf), on Linux or WSL:
 
 ```bash
-# n = 250..512, 30 measured counter runs, no-vectorisation at 500
+bash scripts/run.sh experiments/01-matrix-multiplication            # default checks
+bash scripts/run.sh experiments/01-matrix-multiplication tile_sweep oblivious
+bash scripts/run.sh experiments/01-matrix-multiplication transpose  # naive / tiled / oblivious A^T
+
+# the 2026-11-01 session (the other sub-folders are made the same way with --out .../large-n etc.)
 SIZES="250 256 400 500 512" COUNTER_SIZES="250 256 400 500 512" COUNTER_RUNS=30 NOVEC_SIZE=500 \
-    bash scripts/run.sh experiments/01-matrix-multiplication \
-    environment timings cache_counters no_vectorization \
+    bash scripts/run.sh experiments/01-matrix-multiplication environment timings cache_counters no_vectorization \
     --out experiments/01-matrix-multiplication/results/2026-11-01-ryzen5500u-wsl2
-
-# n = 1000, 1024
-SIZES="1000 1024" COUNTER_SIZES="1000 1024" COUNTER_RUNS=10 \
-    bash scripts/run.sh experiments/01-matrix-multiplication \
-    environment timings cache_counters \
-    --out experiments/01-matrix-multiplication/results/2026-11-01-ryzen5500u-wsl2/large-n
-
-# tile-size sweep at n = 1000
-for d in 8 16 32 64 128; do
-    VARIANTS=tiled EXTRA_ARGS="$d" SIZES=1000 COUNTER_SIZES=1000 COUNTER_RUNS=10 \
-        bash scripts/run.sh experiments/01-matrix-multiplication \
-        environment timings cache_counters \
-        --out experiments/01-matrix-multiplication/results/2026-11-01-ryzen5500u-wsl2/tile-sweep/d$d
-done
+VARIANTS="row_wise tiled" SIZES="600 650 700 725 750 775 800 900 1000" \
+    bash scripts/run.sh experiments/01-matrix-multiplication timings \
+    --out experiments/01-matrix-multiplication/results/2026-11-01-ryzen5500u-wsl2/l3-sweep
 ```
 
-A default `bash scripts/run.sh experiments/01-matrix-multiplication` uses [`benchmark.conf`](benchmark.conf) and writes `results/<date>-local/`.
+The exact commands of the 2026-11-14 sessions are in [notes/2026-11-14.txt](notes/2026-11-14.txt) (section 6). Figures come from the CSV files ([scripts/plot/README.md](../../scripts/plot/README.md)):
 
-## Method
+```powershell
+.\.venv\Scripts\python.exe scripts/plot/make_figures.py experiments/01-matrix-multiplication/results/2026-11-01-ryzen5500u-wsl2
+```
 
-- Machine: AMD Ryzen 5 5500U, WSL2 (Ubuntu 26.04), g++ 15.2.0, `-O3 -DNDEBUG`. Geometry from `lscpu -C`: L1d 32 KiB = 64 sets × 8 ways; L2 512 KiB = 1024 × 8; L3 4 MiB = 4096 × 16; 64-byte lines; 4 KiB pages; THP = `madvise`. Files: `results/2026-10-18-ryzen5500u-wsl2/environment.txt` and `results/2026-11-01-ryzen5500u-wsl2/environment.txt`.
-- Matrices of `double`, uniform in [-1, 1], seed 12345. Each version is its own process.
-- Timing: one warm-up, then the median (7 repetitions; 5 at n ≥ 1024). Allocation is outside the timed region.
-- Counters: `perf stat` user-mode. The process also does setup and a reference multiply. We run with `LO = 1` and `HI = 1 + COUNTER_RUNS` repetitions and take `(HI − LO) / COUNTER_RUNS`. **Validity check:** `l1_loads_per_run` should be about `1.5 n³` for every version (this counter is per instruction and includes stores; SSE2 moves 2 doubles). Under WSL2 use `COUNTER_RUNS ≥ 30` for n ≤ 512; 3 runs is too noisy (can even go negative).
-- On this CPU, checked equal to the raw event codes (`results/2026-11-01-ryzen5500u-wsl2/perf-event-mapping.txt`):
-
-| `perf` name             | Raw     | Meaning on Zen 2                                                |
-| ----------------------- | ------- | --------------------------------------------------------------- |
-| `L1-dcache-loads`       | `r0040` | L1 data accesses (loads and stores), per instruction            |
-| `L1-dcache-load-misses` | `rc860` | L1D → L2 requests, **including prefetch and stores**            |
-| `cache-references`      | `rff60` | all L2 requests                                                 |
-| `cache-misses`          | `r0964` | L2 misses (data + instruction fetch), **excluding L2 prefetch** |
-| `dTLB-loads`            | `rff45` | L1 DTLB misses                                                  |
-| `dTLB-load-misses`      | `rf045` | L2 DTLB misses / page walks                                     |
-
-On Intel, `cache-misses` means LLC misses. That is **not** what we have. WSL2 has no L3 / DRAM counters.
-
-- Alignment: four `std::vector<double>` allocations at n ≥ 250 all sat at `address % 64 = 16` and `address % 4096 = 16` (page + 16 bytes).
-
----
-
-## Results
-
-Two sessions on the same laptop. Absolute times move with power plan and other programs; **ratios and miss counts** repeat. Use 2026-11-01 for theory comparisons (more sizes, 30-run counters). Keep 2026-10-18 for n = 64 / 128 and the first no-vectorisation at n = 512.
-
-### 2026-10-18 — first measurements
-
-`results/2026-10-18-ryzen5500u-wsl2/`
-
-|    n | naive (ms) | row_wise (ms) | tiled (ms) | naive / row_wise | row_wise / tiled |
-| ---: | ---------: | ------------: | ---------: | ---------------: | ---------------: |
-|   64 |      0.136 |         0.052 |      0.058 |             2.6× |             0.9× |
-|  128 |       2.20 |          0.41 |       0.48 |             5.4× |             0.9× |
-|  256 |       38.2 |          4.06 |       4.01 |             9.4× |             1.0× |
-|  512 |        832 |          34.0 |       36.4 |            24.5× |             0.9× |
-| 1024 |       8630 |           742 |        369 |            11.6× |             2.0× |
-
-Counters then used 3 measured runs and no TLB columns. They already showed the shape (naive L1 miss rate 60–65% vs ~8% for `row_wise`; naive L2 misses ~n³ at 512 and 1024) but some load counts were off `1.5 n³`. The “over 100× last-level misses” sentence in the old conclusions was wrong: those numbers are **L2** misses.
-
-No-vectorisation at n = 512: `row_wise` 56.0 ms vs `naive` 799 ms (**14×**). That 14× is real for this n, but n = 512 is the conflict-miss case. See 2026-11-01 at n = 500 for the number without that extra factor.
-
-### 2026-11-01 — timings
-
-`results/2026-11-01-ryzen5500u-wsl2/timings.csv` and `large-n/timings.csv`
-
-|    n | naive (ms) | row_wise (ms) | tiled d=32 (ms) |   GFLOPS n / r / t | naive / row_wise | row_wise / tiled |
-| ---: | ---------: | ------------: | --------------: | -----------------: | ---------------: | ---------------: |
-|  250 |       19.5 |          6.02 |            7.18 | 1.61 / 5.19 / 4.35 |             3.2× |             0.8× |
-|  256 |       63.0 |          6.71 |            6.22 | 0.53 / 5.00 / 5.39 |             9.4× |             1.1× |
-|  400 |       83.2 |          26.3 |            26.8 | 1.54 / 4.86 / 4.78 |             3.2× |             1.0× |
-|  500 |        169 |          50.1 |            43.4 | 1.48 / 4.99 / 5.76 |             3.4× |             1.2× |
-|  512 |        976 |          40.1 |            38.7 | 0.28 / 6.69 / 6.94 |            24.3× |             1.0× |
-| 1000 |       1724 |           728 |             315 | 1.16 / 2.75 / 6.36 |             2.4× |             2.3× |
-| 1024 |       9650 |           788 |             384 | 0.22 / 2.73 / 5.60 |            12.2× |             2.1× |
-
-Same ratios as Oct 18 at the shared sizes. New information: n = 250/400/500 are only ~3×, and n = 1000 `naive` is 5.6× faster than n = 1024.
-
-### 2026-11-01 — L1 misses versus the formulas
-
-`cache-counters.csv` (30 runs) and `large-n/cache-counters.csv` (10 runs). All `l1_loads_per_run` values are within 5% of `1.5 n³` except `naive` at n = 1024 (1.25×; still usable). A few TLB cells went negative (WSL noise on small counts); those are ignored.
-
-L1 formulas used below: `row_wise` = `n³/L`; `naive` = `n³/L` at n = 250 (column fits), `n³` otherwise; `tiled` = `2 n³ /(d L)` with d = 32; lower bound = `2 n³ /(L √Z)` with Z = 4096.
-
-|    n | naive meas. |                         vs formula | row_wise meas. | vs `n³/L` | tiled meas. | vs `2n³/(dL)` |
-| ---: | ----------: | ---------------------------------: | -------------: | --------: | ----------: | ------------: |
-|  250 |      3.08 M |                    1.58 × (`n³/L`) |         1.93 M |     0.99× |      0.65 M |          5.3× |
-|  256 |      17.2 M |                        1.02 × `n³` |         2.14 M |     1.02× |      4.65 M |           35× |
-|  400 |      68.8 M |                        1.07 × `n³` |         8.18 M |     1.02× |      2.16 M |          4.3× |
-|  500 |       114 M |                        0.91 × `n³` |         16.0 M |     1.02× |      4.91 M |          5.0× |
-|  512 |       139 M |                        1.04 × `n³` |         17.2 M |     1.02× |      39.7 M |           38× |
-| 1000 |      1128 M | 1.13 × `n³` (= 1.00 × `n³(1+1/L)`) |          129 M |     1.03× |      42.3 M |          5.4× |
-| 1024 |      1171 M |                        1.09 × `n³` |          144 M |     1.07× |       317 M |           38× |
-
-`row_wise` **is** the formula. The +1–7% is the extra line from the 16-byte allocation offset.
-
-`naive` is `n³` whenever the column does not fit in L1 **or** collides in a few sets. At n = 1000 the extra 13% matches the LRU form `n³(1+1/L)` (A misses too). At n = 250 the column spreads over many sets and 250 lines < 512, so we get the `n³/L` regime; the remaining 1.58× is alignment, counted prefetches, and some set pressure.
-
-`tiled` at non-power-of-two n is 4–5× the ideal (5/4 from alignment, the rest from counted prefetches and leftover set pressure). At power-of-two n it is ~38× the ideal — **conflict**, not a wrong formula. The 32 rows of a B tile are `n×8` bytes apart; at n = 256/512/1024 that lands them in 1–2 L1 sets with only 8 ways.
-
-Ratio to the L1 lower bound at n = 1000: `naive` 289× (theory 256), `row_wise` 33× (theory 32), `tiled` measured 11× (ideal would be 2). We are not yet at the bound; a cache-oblivious or conflict-avoiding layout is the way to close the gap.
-
-### Why `naive` collapses at n = 256, 512, 1024
-
-L1 set index = `(address / 64) mod 64` (address bits 6–11). A step of 4096 bytes leaves those bits unchanged.
-
-|    n | Bytes per row | L1 sets used by one B column |                 Lines that set(s) can hold | Lines the column needs |
-| ---: | ------------: | ---------------------------: | -----------------------------------------: | ---------------------: |
-|  250 |          2000 |       many (step 31–32 sets) |                                  up to 512 |                    250 |
-|  256 |          2048 |                            2 |                                         16 |                    256 |
-|  400 |          3200 |                           32 |                                        256 |                    400 |
-|  500 |          4000 |                         many | 512 (capacity already short: 500+63 > 512) |                    500 |
-|  512 |          4096 |                        **1** |                                          8 |                    512 |
-| 1000 |          8000 |                     64 (all) |                                        512 |                   1000 |
-| 1024 |          8192 |                        **1** |                                          8 |                   1024 |
-
-L2, for a 4096-byte stride, can use only 16 of 1024 sets (128 lines) because bits 6–11 stay fixed and only the physical page number varies. So at n = 512 and 1024 the column does not fit in L2 either:
-
-|    n | naive L2 misses (`cache-misses`) | Comment                                |
-| ---: | -------------------------------: | -------------------------------------- |
-|  250 |                           0.42 M | column fits in L2; close to compulsory |
-|  256 |                           0.58 M | L2 still mostly hits                   |
-|  400 |                           0.39 M | 32 L1 sets fail, but L2 has room       |
-|  500 |                           1.48 M |                                        |
-|  512 |                   **136 M ≈ n³** | L2 thrashes with the column            |
-| 1000 |                             77 M | B = 8 MB > L2; ~0.6 × `n³/L`           |
-| 1024 |                  **1089 M ≈ n³** | 8 L2 sets vs 1024 lines                |
-
-That is the exact reason n = 1024 `naive` takes 9.7 s and n = 1000 takes 1.7 s.
-
-### Why `tiled` wins at n = 1000 / 1024 (L3 / RAM)
-
-L3 and DRAM counters do not exist in this WSL2. Timing is the evidence.
-
-`l3-sweep/timings.csv` — `row_wise` vs `tiled` (d = 32):
-
-|    n |  B size | row_wise GFLOPS | tiled GFLOPS | tiled / row_wise |
-| ---: | ------: | --------------: | -----------: | ---------------: |
-|  512 | 2.0 MiB |            6.69 |         6.94 |             1.0× |
-|  600 | 2.9 MiB |            5.34 |         6.85 |             1.3× |
-|  650 | 3.4 MiB |            4.28 |         5.56 |             1.3× |
-|  700 | 3.9 MiB |            3.54 |         6.09 |             1.7× |
-|  800 | 5.1 MiB |            3.52 |         6.19 |             1.8× |
-|  900 | 6.4 MiB |            2.85 |         6.11 |             2.1× |
-| 1000 | 7.6 MiB |            2.58 |         6.12 |             2.4× |
-
-The drop in `row_wise` starts around n = 600 and is **gradual**, not a step at n = 724 (`√(4 MiB / 8)`). That matches a victim L3 that is also shared and that A and C pass through: the useful capacity for B is less than 4 MiB.
-
-Bytes `row_wise` must read from wherever B lives: `n × n² × 8` = `8 n³` bytes of B (plus A and C once). At n = 1024 that is 8.6 GB of B in 788 ms ≈ **10.9 GB/s** (Oct 18: 11.6 GB/s in 742 ms). One core streaming from RAM. Tiling reduces how often B is read from that far away; L1 misses can go up (and do) while wall time goes down.
-
-### Tile-size sweep (n = 1000)
-
-`tile-sweep/d*/`
-
-|      d |      ms |   GFLOPS | L1 misses | L2 demand misses | Fits in L1? (`3 d² ≤ 4096`)                            |
-| -----: | ------: | -------: | --------: | ---------------: | ------------------------------------------------------ |
-|      8 |     549 |     3.65 |      98 M |             48 M | yes, but `2n³/(dL)` is large and loop overhead is high |
-|     16 |     402 |     4.98 |      40 M |             28 M | yes                                                    |
-| **32** | **306** | **6.53** |  **38 M** |             11 M | yes, near `d* ≈ 37`                                    |
-|     64 |     333 |     6.01 |     210 M |            5.7 M | **no** (12 288 > 4096) — L1 behaves like `row_wise`    |
-|    128 |     337 |     5.94 |     170 M |            2.8 M | no — still fits in L2 (384 KiB < 512 KiB)              |
-
-U-shape in time, minimum at d = 32, as predicted. L2 demand misses keep falling as d grows (better L2 reuse); that no longer helps once L1 is lost.
-
-### TLB
-
-|    n | version  | L1 DTLB misses | page walks |
-| ---: | -------- | -------------: | ---------: |
-|  512 | naive    |     135 M ≈ n³ |     1.18 M |
-|  512 | row_wise |        (noise) |       ~5 k |
-|  512 | tiled    |         0.58 M |        8 k |
-| 1000 | naive    |    1007 M ≈ n³ |      3.2 M |
-| 1000 | row_wise |          2.0 M |     0.85 M |
-| 1024 | naive    |    1047 M ≈ n³ |  **114 M** |
-| 1024 | row_wise |          2.3 M |      4.7 M |
-
-`naive` at n = 512: each column step is exactly one page, 512 pages > 64 L1-TLB entries, so almost every B access misses the L1 TLB. The L2 TLB (2048) still holds 3 × 512 = 1536 pages, so walks stay in the millions, not the hundreds of millions. At n = 1024, B alone is 2048 pages and three matrices are 6144 > 2048: the L2 TLB overflows and we pay 114 M walks. That is a second reason n = 1024 `naive` is so slow, on top of L1/L2 conflict.
-
-### Vectorisation (n = 500, 2026-11-01)
-
-`no-vectorization-500.csv`. Release vs `-fno-tree-vectorize -fno-tree-slp-vectorize`. The binary uses SSE2 (`mulpd` on xmm), not AVX2/FMA (`-O3` without `-march=native`).
-
-| Version  | With SSE2 (ms) | Without (ms) |                                          SIMD factor |
-| -------- | -------------: | -----------: | ---------------------------------------------------: |
-| naive    |            169 |          136 | ~1× (no inner-loop vectorisation of the column walk) |
-| row_wise |           50.1 |         60.4 |                                                1.21× |
-| tiled    |           43.4 |         54.2 |                                                1.25× |
-
-Without SIMD, `row_wise` is still **2.3×** faster than `naive` (136 / 60). Access order is the cause. Use this number, not the 14× at n = 512, when talking about “how much is cache vs SIMD”.
-
----
-
-## Conclusions
-
-1. The miss formulas work where the model’s assumptions hold. `row_wise` L1 misses are `n³/L` at every n we measured. `naive` is `n³/L` only when the B column fits in L1 without conflicts (n = 250 here); otherwise it is `n³`.
-2. The lower bound `2 n³ / (L √Z)` is the target, not a measurement. On L1, `row_wise` is ~32× above it and our tiled code is ~2× above it in the ideal (conflict-free) case, ~11× above it in the n = 1000 measurement.
-3. Of the three regimes, we live in (b) on L1 for n ≥ 64. Regime (a) is n = 64 on L1 / n ≤ 256 on L2 / n ≤ 600-ish on L3. Regime (c) needs n > 4096 on L1 or a simulator. Inside (b), power-of-two n is a different machine from n = 250/400/500 because of set mapping.
-4. Tiling’s job is the L3/RAM regime: 2.3× at n = 1000, 2.1× at n = 1024, best d = 32. L1 counters cannot show that win; they were never going to.
-5. `cache-misses` on this CPU is L2. Saying “last-level” was a mistake.
-
-## Limitations and open questions
-
-- WSL2: noisy counters (need many runs), no L3/DRAM events, 4 of 12 threads visible.
-- `tiled` at non-power-of-two n is still 4–5× the ideal L1 count. Alignment explains 1.25×; the rest is not isolated (prefetch in the L1 counter, residual conflicts).
-- Only one machine, one compiler, `double`, one thread. No n = 2048 (`naive` reference check is several minutes).
-- Not yet implemented: transposed B (professor’s (b) as storage), cache-oblivious recursion, a padded / copied layout that kills the 4096-byte conflict, a cache simulator for regime (c).
+**Dated notes** (lab notebook; statements there may have been corrected later, see [findings](../../docs/findings.md#corrected-since-october)): [2026-10-18](notes/2026-10-18.md) first measurements, [2026-11-01](notes/2026-11-01.md) the professor's cache questions and the second measurement, [2026-11-01-theory](notes/2026-11-01-theory.txt) first theory notes, [2026-11-14](notes/2026-11-14.txt) tile sizes, layouts and cache-oblivious, [2026-11-15](notes/2026-11-15.txt) figures and the stopped counter run, [2026-11-15-transpose](notes/2026-11-15-transpose.md) transposition measurement.

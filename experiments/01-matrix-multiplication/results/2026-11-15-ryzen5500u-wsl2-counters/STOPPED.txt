@@ -1,0 +1,1 @@
+STOPPED by user request (2026-11-15): cache counter run interrupted. Partial CSV kept.
